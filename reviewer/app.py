@@ -3,8 +3,7 @@
 reviewer/app.py — human review/correct tool for Stage 2 (FastAPI backend).
 
 Per story id it lets a person:
-  - drag the 2 divider lines on the rectified panel and recompute the 3 tiles,
-  - fix a tile's mask (brush erase/restore in the browser, or SAM-2 point refine on the panel),
+  - drag/resize the crop box over the source photo and recompute the 3 tiles,
   - drag the 2 audio cut points and re-split,
   - play each of the 3 audio clips,
   - Save -> marks the id reviewed so export.py will include it.
@@ -14,22 +13,18 @@ Env:  WORK=<work dir>  (default ./WORK)
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import sys
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "scripts"))
 WORK = os.environ.get("WORK", "WORK")
 
 app = FastAPI(title="Exquisite Stories reviewer")
-
-# Lazy/global heavy handles
-_sam = None
 
 
 def item_dir(tid: str) -> str:
@@ -93,73 +88,23 @@ def file(tid: str, kind: str, name: str):
 
 @app.post("/api/retile/{tid}")
 async def retile(tid: str, req: Request):
-    """Body: {dividers:[f1,f2], method:"fill"|"matte"|"luma"}. Recompute the 3 tiles from the panel."""
+    """Body: {box:[x0,y0,x1,y1], out_size?:int}. Recompute the 3 tiles from an adjusted crop box
+    (box is in ORIGINAL source-image pixels)."""
     import cv2
     import image_ops
     body = await req.json()
-    dividers = sorted(float(x) for x in body["dividers"])
-    method = body.get("method", "fill")
-    gap_seal = body.get("gap_seal", "auto")          # "auto" | int radius | 0
-    if isinstance(gap_seal, str) and gap_seal.isdigit():
-        gap_seal = int(gap_seal)
+    box = [int(round(float(v))) for v in body["box"]]
+    out_size = int(body.get("out_size", 1024))
     d = item_dir(tid)
-    panel = cv2.imread(os.path.join(d, "image", "panel.png"), cv2.IMREAD_COLOR)
-    if panel is None:
-        raise HTTPException(400, "no panel")
-    res = image_ops.retile(panel, dividers, os.path.join(d, "image"), method=method, debug=True,
-                           gap_seal=gap_seal)
-    dec = res.get("decision") or {}
     st_path = os.path.join(d, "image", "image_state.json")
-    st = json.load(open(st_path)); st["dividers"] = dividers; st["method"] = method
-    st["gap_seal"] = gap_seal
-    st["cut_method"] = res["method"]                  # resolved (fill/matte/crop)
-    if "cuttable" in dec:
-        st["cuttable"] = dec["cuttable"]
-        st["scores"] = dec.get("candidates")
+    st = json.load(open(st_path))
+    img = cv2.imread(st["source"], cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "source image unreadable")
+    image_ops.retile(img, box, os.path.join(d, "image"), out_size=out_size)
+    st["box"] = box; st["out_size"] = out_size; st["source_engine"] = "manual"
     json.dump(st, open(st_path, "w"), indent=2)
-    return {"ok": True, "dividers": dividers, "method": method,
-            "cut_method": res["method"], "gap_seal": gap_seal}
-
-
-@app.post("/api/savetile/{tid}/{part}")
-async def savetile(tid: str, part: str, req: Request):
-    """Body = raw PNG bytes of an edited tile (browser brush result). Overwrites the tile."""
-    if part not in ("top", "middle", "bottom"):
-        raise HTTPException(400, "bad part")
-    data = await req.body()
-    with open(os.path.join(item_dir(tid), "image", f"{part}.png"), "wb") as fh:
-        fh.write(data)
-    return {"ok": True}
-
-
-@app.post("/api/sam/{tid}")
-async def sam(tid: str, req: Request):
-    """SAM-2 point refine on the panel. Body: {points:[[x,y,label],...]}. Returns a PNG mask.
-    Falls back to 503 if SAM 2 isn't installed (the UI then uses the brush)."""
-    import cv2
-    import numpy as np
-    global _sam
-    body = await req.json()
-    pts = body.get("points", [])
-    panel = cv2.imread(os.path.join(item_dir(tid), "image", "panel.png"), cv2.IMREAD_COLOR)
-    if panel is None:
-        raise HTTPException(400, "no panel")
-    try:
-        if _sam is None:
-            from sam2.build_sam import build_sam2  # type: ignore
-            from sam2.sam2_image_predictor import SAM2ImagePredictor  # type: ignore
-            ckpt = os.path.join(HERE, "..", "checkpoints", "sam2.1_hiera_base_plus.pt")
-            cfg = "configs/sam2.1/sam2.1_hiera_b+.yaml"
-            _sam = SAM2ImagePredictor(build_sam2(cfg, ckpt))
-        _sam.set_image(cv2.cvtColor(panel, cv2.COLOR_BGR2RGB))
-        coords = np.array([[p[0], p[1]] for p in pts], dtype="float32")
-        labels = np.array([int(p[2]) for p in pts], dtype="int32")
-        masks, scores, _ = _sam.predict(point_coords=coords, point_labels=labels, multimask_output=True)
-        m = (masks[int(np.argmax(scores))] * 255).astype("uint8")
-        ok, buf = cv2.imencode(".png", m)
-        return Response(content=buf.tobytes(), media_type="image/png")
-    except Exception as e:
-        raise HTTPException(503, f"SAM2 unavailable: {e}")
+    return {"ok": True, "box": box}
 
 
 @app.post("/api/resplit/{tid}")

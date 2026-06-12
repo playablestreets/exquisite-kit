@@ -111,15 +111,19 @@ def image_capture_time(path: str) -> dt.datetime | None:
             parsed = _parse_exif_dt(ts, off)
             if parsed:
                 return parsed
-    # Fallback: Pillow
+    # Fallback: Pillow. Crucially also read OffsetTimeOriginal (0x9011) — DateTimeOriginal is a
+    # naive LOCAL wall-clock, so without its zone we'd mis-place the photo by the UTC offset (e.g.
+    # +10:00 → a 10h skew that breaks pairing against the audio's UTC creation_time).
     try:
         from PIL import Image, ExifTags  # noqa: WPS433 (lazy import keeps match usable without PIL)
         tagmap = {v: k for k, v in ExifTags.TAGS.items()}
         exif = Image.open(path).getexif()
         ifd = exif.get_ifd(0x8769) if hasattr(exif, "get_ifd") else {}
         raw = ifd.get(tagmap.get("DateTimeOriginal")) or exif.get(tagmap.get("DateTime"))
+        off = (ifd.get(0x9011) or ifd.get(0x9010)          # OffsetTimeOriginal / OffsetTime
+               or exif.get(0x9011) or exif.get(0x9010))
         if raw:
-            return _parse_exif_dt(str(raw))
+            return _parse_exif_dt(str(raw), str(off) if off else None)
     except Exception:
         pass
     return None

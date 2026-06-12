@@ -4,9 +4,9 @@ Run this once on each new machine before using the pipeline. It is safe to re-ru
 idempotent. Target: **macOS (Apple Silicon)** or **Linux**. Everything lives inside the kit, so
 nothing pollutes the system Python.
 
-> **Why a dedicated Python 3.11:** `torch`, `onnxruntime`, and `whisperx` do not yet publish wheels
-> for very new Python (e.g. 3.13/3.14). Pin **3.11**. If you skip this you will hit
-> `No matching distribution` errors.
+> **Why a dedicated Python 3.11:** `faster-whisper`/`ctranslate2` and `whisperx` do not yet publish
+> wheels for very new Python (e.g. 3.13/3.14). Pin **3.11**. If you skip this you will hit
+> `No matching distribution` errors. (The image side is pure OpenCV + the `claude` CLI — no ML deps.)
 
 ## 1. System packages
 
@@ -37,14 +37,14 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip wheel
 pip install -r requirements.txt
-
-# SAM 2 (interactive mask refinement) — not reliably on PyPI, install from source:
-pip install "git+https://github.com/facebookresearch/sam2.git"
 ```
 
-> **Apple Silicon note:** the default `torch` wheel already supports the **MPS** GPU backend. No
-> CUDA needed. On a Linux+NVIDIA box, instead `pip install onnxruntime-gpu` and the CUDA torch
-> build for big speedups.
+## 2b. The `claude` CLI (hard-case image judgement)
+
+The image pipeline crops most pages with plain OpenCV geometry, but **escalates hard pages**
+(poor quality, non-workbook drawings, panel not found) to the local **`claude` CLI**. Make sure
+`claude` is on `PATH` and authenticated. It's optional — run `process.py --no-claude` to skip
+escalation entirely and stay fully offline/deterministic.
 
 ## 3. Model checkpoints
 
@@ -52,13 +52,8 @@ pip install "git+https://github.com/facebookresearch/sam2.git"
 # in the repo root, venv active
 python scripts/process.py --download-models
 ```
-This downloads/caches:
-- **BiRefNet** background-removal model (via `rembg`, cached under `~/.u2net` / HF cache),
-- **Whisper** transcription model (via `whisperx`, cached under `~/.cache`),
-- **SAM 2** checkpoint into `checkpoints/` (`sam2.1_hiera_base_plus.pt`, ~80 MB).
-
-If `--download-models` can't reach a source, it prints the exact URLs to fetch manually into
-`checkpoints/`.
+This caches the **Whisper** transcription model (via `faster-whisper`, under `~/.cache`). The image
+side needs **no** model checkpoints.
 
 ## 4. Chapter-text reading (how the audio split learns where the chapters are)
 
@@ -84,10 +79,9 @@ python scripts/process.py --selfcheck
 Expected output (abridged):
 ```
 [ok] ffmpeg / ffprobe / exiftool found
-[ok] torch 2.x  device=mps            # or cuda / cpu
-[ok] rembg BiRefNet session created
+[ok] opencv 4.x importable
+[ok] claude CLI found (hard-case image judgement)   # or [--] not found → deterministic-only
 [ok] faster-whisper importable
-[ok] SAM2 checkpoint present
 [ok] chapter reading: claude-orchestrator (or: anthropic-api)
 SELFCHECK PASSED
 ```
@@ -98,8 +92,7 @@ If every line says `[ok]`, you're ready for [MATCH.md](MATCH.md).
 
 | Symptom | Fix |
 |---|---|
-| `No matching distribution found for torch` | You're not on Python 3.11. Recreate the venv with `python3.11`. |
-| `onnxruntime` import crash on Linux | `pip install onnxruntime` (CPU) or the matching `onnxruntime-gpu`. |
-| SAM 2 import error | Re-run the `git+` install; needs a C++ toolchain (`xcode-select --install` / `build-essential`). |
-| First `process.py` run is slow | Models download on first use; subsequent runs are cached. |
+| `No matching distribution found for faster-whisper`/`ctranslate2` | You're not on Python 3.11. Recreate the venv with `python3.11`. |
+| `claude: command not found` | Install/authenticate the Claude Code CLI, or run `process.py --no-claude` (deterministic-only). |
+| First `process.py` run is slow | The Whisper model downloads on first use; subsequent runs are cached. |
 | `exiftool: command not found` (match stage) | Install it (step 1); match falls back to Pillow EXIF but exiftool is more reliable. |

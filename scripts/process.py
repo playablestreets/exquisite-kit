@@ -60,7 +60,8 @@ def discover(root: str) -> dict[str, dict]:
     return groups
 
 
-def build_one(tid: str, g: dict, work: str, method: str) -> dict:
+def build_one(tid: str, g: dict, work: str, use_claude: bool = True,
+              claude_threshold: float = 0.55, force_claude: bool = False) -> dict:
     import image_ops
     import audio_ops
     out = os.path.join(work, tid)
@@ -69,10 +70,11 @@ def build_one(tid: str, g: dict, work: str, method: str) -> dict:
 
     if g.get("image"):
         img_dir = os.path.join(out, "image")
-        st = image_ops.propose(g["image"], img_dir, method=method, debug=True)
-        status["image"] = {"dir": img_dir, "source": g["image"], "dividers": st.dividers,
-                           "method": method, "kind": st.kind, "cut_method": st.cut_method,
-                           "cuttable": st.cuttable}
+        st = image_ops.propose(g["image"], img_dir, use_claude=use_claude,
+                               claude_threshold=claude_threshold, force_claude=force_claude)
+        status["image"] = {"dir": img_dir, "source": g["image"], "box": st.box,
+                           "kind": st.kind, "engine": st.source_engine,
+                           "confidence": st.confidence}
     if g.get("audio"):
         aud_dir = os.path.join(out, "audio")
         st = audio_ops.propose(g["audio"], g.get("image"), aud_dir)
@@ -97,17 +99,15 @@ def selfcheck() -> int:
     line(bool(shutil.which("ffmpeg") and shutil.which("ffprobe")), "ffmpeg / ffprobe found")
     line(bool(shutil.which("exiftool")), "exiftool found (image EXIF; Pillow is fallback)")
     try:
-        import torch
-        dev = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-        line(True, f"torch {torch.__version__}  device={dev}")
+        import cv2  # noqa: F401  (the whole image crop pipeline)
+        line(True, f"opencv {cv2.__version__} importable")
     except Exception as e:
-        line(False, f"torch missing: {e}")
-    try:
-        from rembg import new_session
-        new_session(os.environ.get("REMBG_MODEL", "birefnet-general"))
-        line(True, "rembg BiRefNet session created")
-    except Exception as e:
-        line(False, f"rembg/BiRefNet: {e}")
+        line(False, f"opencv missing: {e}")
+    # claude CLI is OPTIONAL: only hard-case images escalate to it (use --no-claude to skip).
+    if shutil.which("claude"):
+        print("[ok] claude CLI found (hard-case image judgement)")
+    else:
+        print("[--] claude CLI not found — runs deterministic-only (equivalent to --no-claude)")
     try:
         import faster_whisper  # noqa: F401  (primary transcription backend)
         line(True, "faster-whisper importable")
@@ -117,9 +117,6 @@ def selfcheck() -> int:
             line(True, "whisperx importable (faster-whisper missing)")
         except Exception:
             line(False, f"no Whisper backend: {e}")
-    ckpt = os.path.join(os.path.dirname(__file__), "..", "checkpoints")
-    has_sam = any(f.endswith(".pt") for f in os.listdir(ckpt)) if os.path.isdir(ckpt) else False
-    line(has_sam, "SAM2 checkpoint present in checkpoints/")
     mode = "anthropic-api" if os.environ.get("ANTHROPIC_API_KEY") else "claude-orchestrator"
     print(f"[ok] chapter reading: {mode}")
     print("SELFCHECK PASSED" if ok else "SELFCHECK INCOMPLETE — see SETUP.md")
@@ -128,12 +125,6 @@ def selfcheck() -> int:
 
 def download_models() -> int:
     print("Caching models …")
-    try:
-        from rembg import new_session
-        new_session(os.environ.get("REMBG_MODEL", "birefnet-general"))
-        print("  [ok] BiRefNet cached")
-    except Exception as e:
-        print(f"  [!!] BiRefNet: {e}")
     try:
         from faster_whisper import WhisperModel       # primary transcription backend
         WhisperModel("small", device="cpu", compute_type="int8")
@@ -146,20 +137,7 @@ def download_models() -> int:
             print("  [ok] whisperx(small) cached (fallback)")
         except Exception as e2:
             print(f"  [!!] whisperx: {e2}")
-    ckpt = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "checkpoints"))
-    os.makedirs(ckpt, exist_ok=True)
-    sam = os.path.join(ckpt, "sam2.1_hiera_base_plus.pt")
-    if not os.path.exists(sam):
-        url = "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt"
-        try:
-            import urllib.request
-            print("  downloading SAM2 checkpoint …")
-            urllib.request.urlretrieve(url, sam)
-            print("  [ok] SAM2 checkpoint")
-        except Exception as e:
-            print(f"  [!!] SAM2 download failed ({e}). Fetch manually into checkpoints/:\n      {url}")
-    else:
-        print("  [ok] SAM2 checkpoint present")
+    print("  (image pipeline needs no model checkpoints — it's OpenCV + optional claude CLI)")
     return 0
 
 
@@ -168,10 +146,12 @@ def main() -> int:
     ap.add_argument("--in", dest="inp", help="folder of matched/tagged files (PROCESSING)")
     ap.add_argument("--work", default="WORK", help="where proposals are written")
     ap.add_argument("--only", help="comma-separated ids to (re)build, e.g. pair-001,pair-002")
-    ap.add_argument("--method", choices=["auto", "fill", "matte", "luma", "crop"], default="auto",
-                    help="masking: auto=cuttability gate picks fill/matte else crop (default); "
-                         "fill=scissor cut-out (line art); matte=BiRefNet; luma=key; "
-                         "crop=no cut, thirds on solid page-colour bg")
+    ap.add_argument("--no-claude", dest="no_claude", action="store_true",
+                    help="never escalate hard images to the claude CLI (fully offline/deterministic)")
+    ap.add_argument("--always-claude", dest="always_claude", action="store_true",
+                    help="escalate EVERY image to claude (evaluation only; spends tokens)")
+    ap.add_argument("--claude-threshold", type=float, default=0.55,
+                    help="escalate to claude when the deterministic confidence is below this (0..1)")
     ap.add_argument("--selfcheck", action="store_true")
     ap.add_argument("--download-models", action="store_true")
     args = ap.parse_args()
@@ -190,6 +170,7 @@ def main() -> int:
         ids = [i for i in ids if i in want]
     print(f"Discovered {len(groups)} ids; building {len(ids)} into {args.work}")
     os.makedirs(args.work, exist_ok=True)
+    escalated = with_image = 0
     for tid in ids:
         done = os.path.join(args.work, tid, "status.json")
         if os.path.exists(done) and not args.only:
@@ -197,9 +178,16 @@ def main() -> int:
             continue
         print(f"  {tid}: building …")
         try:
-            build_one(tid, groups[tid], args.work, method=args.method)
+            status = build_one(tid, groups[tid], args.work, use_claude=not args.no_claude,
+                               claude_threshold=args.claude_threshold, force_claude=args.always_claude)
+            if status.get("image"):
+                with_image += 1
+                if status["image"].get("engine") == "claude":
+                    escalated += 1
         except Exception as e:
             print(f"  {tid}: ERROR {e.__class__.__name__}: {e}", file=sys.stderr)
+    print(f"Images: {with_image} built, {escalated} escalated to claude "
+          f"(deterministic for the other {with_image - escalated}).")
     print("Done. Open the reviewer to confirm/adjust, then run export.py.")
     return 0
 

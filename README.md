@@ -2,6 +2,7 @@
 
 **If you are a Claude instance pointed at this folder: start here, then follow the runbooks in
 order — [SETUP.md](SETUP.md) → [MATCH.md](MATCH.md) → [PROCESS.md](PROCESS.md).**
+**Updating a machine that ran an older version? Follow [UPDATE.md](UPDATE.md) first.**
 
 This kit turns raw photos + audio recordings of children's "exquisite corpse" stories into
 website-ready assets. It is self-contained and portable: drop this folder onto a machine that has
@@ -26,9 +27,9 @@ For each story (identified by a shared `pair-NNN` token):
 
 | Asset | Folder | Format |
 |-------|--------|--------|
-| Head crop | `IMAGES_TOP/` | square transparent PNG, background masked |
-| Body crop | `IMAGES_MIDDLE/` | square transparent PNG, background masked |
-| Legs crop | `IMAGES_BOTTOM/` | square transparent PNG, background masked |
+| Head crop | `IMAGES_TOP/` | 1024×1024 flat PNG (white paper kept) |
+| Body crop | `IMAGES_MIDDLE/` | 1024×1024 flat PNG (white paper kept) |
+| Legs crop | `IMAGES_BOTTOM/` | 1024×1024 flat PNG (white paper kept) |
 | Chapter 1 narration | `AUDIO_BEGINNING/` | trimmed WAV |
 | Chapter 2 narration | `AUDIO_MIDDLE/` | trimmed WAV |
 | Chapter 3 narration | `AUDIO_END/` | trimmed WAV |
@@ -45,10 +46,11 @@ raw audio+images       paired & suffixed                       6 asset folders +
 1. **match** ([MATCH.md](MATCH.md)) — figures out which audio file goes with which image (by the
    capture time *embedded inside* each file), gives the pair a shared `__pair-NNN` suffix, and
    moves the tagged files into `PROCESSING/`. Unmatched files get `__nopair`.
-2. **process** ([PROCESS.md](PROCESS.md)) — for each pair: crops + masks the drawing into
-   top/middle/bottom tiles, splits + trims the audio into beginning/middle/end, opens a **review
-   tool** so a human confirms/adjusts every crop, mask, and cut, then exports the sorted assets +
-   manifest into `READY_FOR_DRIVE/` (ready to upload to Google Drive by hand).
+2. **process** ([PROCESS.md](PROCESS.md)) — for each pair: crops the drawing into three equal
+   top/middle/bottom squares (cheap OpenCV geometry; hard photos escalate to the local `claude` CLI),
+   splits + trims the audio into beginning/middle/end, opens a **review tool** so a human
+   confirms/adjusts every crop box and audio cut, then exports the sorted assets + manifest into
+   `READY_FOR_DRIVE/` (ready to upload to Google Drive by hand).
 
 ## The one rule that ties it all together
 
@@ -71,11 +73,11 @@ This repo's root **is** the kit — run everything from here.
   scripts/             ← the deterministic Python (you run these; you don't rewrite them)
     match.py
     process.py
-    image_ops.py
+    image_ops.py       ← OpenCV crop geometry
+    vision.py          ← hard-case escalation to the local `claude` CLI
     audio_ops.py
     export.py
   reviewer/            ← the human review/correct web app
-  checkpoints/         ← model files (populated by SETUP; not committed)
   .venv/               ← Python 3.11 virtualenv (created by SETUP)
 
 # data folders — scaffolded empty in the repo; their CONTENTS are git-ignored (never committed,

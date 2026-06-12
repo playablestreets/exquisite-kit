@@ -27,8 +27,7 @@
   canvas { display:block; border-radius:6px; }
   .tiles { display:flex; gap:10px; margin-top:10px; }
   .tile { text-align:center; }
-  .tile img { width:120px; height:120px; object-fit:contain; background:
-      conic-gradient(#3a3f48 25%, #2b2f37 0 50%, #3a3f48 0 75%, #2b2f37 0) 0/16px 16px; border-radius:6px; cursor:pointer; }
+  .tile img { width:120px; height:120px; object-fit:contain; background:#2b2f37; border-radius:6px; }
   .tile small { color:var(--muted); }
   .row { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
   .chap textarea { width:230px; height:42px; background:#12151a; color:var(--ink); border:1px solid #2a2f38; border-radius:6px; padding:6px; }
@@ -49,27 +48,11 @@
   <div class="cols">
     <!-- IMAGE -->
     <section class="card" id="imgcard">
-      <h3>Image — drag the 2 divider lines, then recompute</h3>
+      <h3>Image — drag the box to move, drag a corner to resize, then recompute</h3>
       <div class="wrap"><canvas id="panel"></canvas></div>
       <div class="row">
         <button id="recompute" class="primary">Recompute tiles</button>
-        <label>mask:
-          <select id="method">
-            <option value="auto" selected>auto — gate picks cut-out, else crop</option>
-            <option value="fill">fill — scissor cut-out (line art)</option>
-            <option value="matte">matte — BiRefNet</option>
-            <option value="luma">luma — luminance key</option>
-            <option value="crop">crop — no cut, thirds on solid bg</option>
-          </select>
-        </label>
-        <span class="badge" id="cutdecision"></span>
-        <button id="samtoggle" class="toolbtn">SAM click</button>
-        <span class="badge" id="samhint"></span>
-      </div>
-      <div class="row" id="sealrow">
-        fill leaks <input type="range" id="seal" min="0" max="22" value="0" style="width:120px"/>
-        <span class="badge" id="sealval">auto</span>
-        <span class="badge">0 = off · auto · drag right to bridge a wider gap (e.g. an open belly)</span>
+        <span class="badge" id="boxinfo"></span>
       </div>
       <div class="tiles" id="tiles"></div>
     </section>
@@ -91,21 +74,9 @@
   </div>
 </main>
 
-<dialog id="brush">
-  <h3 id="brushtitle">Edit mask</h3>
-  <div class="row">
-    <button id="bmErase" class="toolbtn on">Erase</button>
-    <button id="bmRestore" class="toolbtn">Restore</button>
-    radius <input id="bmR" type="range" min="4" max="60" value="18"/>
-  </div>
-  <canvas id="bcanvas" style="background:
-     conic-gradient(#3a3f48 25%,#2b2f37 0 50%,#3a3f48 0 75%,#2b2f37 0) 0/16px 16px;"></canvas>
-  <div class="row"><button id="bSave" class="go">Apply</button><button id="bCancel">Cancel</button></div>
-</dialog>
-
 <script>
 const $ = s => document.querySelector(s);
-let cur=null, item=null, panelImg=new Image(), dividers=[0.33,0.66], samMode=false, samPts=[];
+let cur=null, item=null, srcImg=new Image(), box=[0,0,0,0], srcW=1, srcH=1;
 const PARTS=['top','middle','bottom'], AUD=['beginning','middle','end'];
 
 async function loadIds(){
@@ -127,16 +98,12 @@ async function load(id){
   // IMAGE
   if(item.image_state){ $('#imgcard').style.display='';
     const ist=item.image_state;
-    dividers=ist.dividers.slice();
-    if(ist.method) $('#method').value=ist.method;
-    // surface the hands-off decision: chosen cut method (or "crop" fallback) + format/trim
-    const dec=[]; if(ist.kind) dec.push(ist.kind);
-    if(ist.cut_method) dec.push(ist.cut_method==='crop'?'CROP (not cuttable)':('cut: '+ist.cut_method));
-    if(ist.trim && ist.trim.applied) dec.push('border-trimmed');
-    $('#cutdecision').textContent=dec.join(' · ');
-    panelImg=new Image();
-    panelImg.onload=drawPanel;
-    panelImg.src='/api/file/'+id+'/image/panel.png?'+Date.now();
+    box=ist.box.slice(); [srcW,srcH]=ist.source_size;
+    $('#boxinfo').textContent=`${ist.kind} · ${ist.source_engine} · conf ${ist.confidence}`
+      +(ist.gate_reasons&&ist.gate_reasons.length?(' · '+ist.gate_reasons.join(',')):'');
+    srcImg=new Image();
+    srcImg.onload=drawPanel;
+    srcImg.src='/api/file/'+id+'/image/source.png?'+Date.now();
     renderTiles();
   } else $('#imgcard').style.display='none';
   // AUDIO
@@ -144,114 +111,55 @@ async function load(id){
   else $('#audcard').style.display='none';
 }
 
-/* ---------- image: panel + dividers ---------- */
-const PW=380;
+/* ---------- image: crop box editor over the source photo ---------- */
+const PW=380; let viewH=0, sc=1;   // sc = displayed px per source px
 function drawPanel(){
-  const c=$('#panel'), scale=PW/panelImg.width, h=panelImg.height*scale;
-  c.width=PW; c.height=h; const ctx=c.getContext('2d');
-  ctx.drawImage(panelImg,0,0,PW,h);
-  dividers.forEach((dy)=>{ const y=dy*h;
-    ctx.strokeStyle='#5db0ff'; ctx.lineWidth=2; ctx.setLineDash([7,5]);
-    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(PW,y); ctx.stroke(); });
-  if(samMode){ ctx.setLineDash([]); samPts.forEach(p=>{ ctx.fillStyle=p[2]?'#42c98a':'#ff5d5d';
-    ctx.beginPath(); ctx.arc(p[0]*PW,p[1]*h,5,0,7); ctx.fill(); }); }
+  const c=$('#panel'); sc=PW/srcImg.width; viewH=srcImg.height*sc;
+  c.width=PW; c.height=viewH; const ctx=c.getContext('2d');
+  ctx.drawImage(srcImg,0,0,PW,viewH);
+  // box scaled into the (downscaled) source preview. box is in ORIGINAL pixels.
+  const bx=box[0]*PW/srcW, by=box[1]*viewH/srcH, bw_=(box[2]-box[0])*PW/srcW, bh_=(box[3]-box[1])*viewH/srcH;
+  ctx.setLineDash([]); ctx.strokeStyle='#5db0ff'; ctx.lineWidth=2;
+  ctx.strokeRect(bx,by,bw_,bh_);
+  ctx.strokeStyle='rgba(93,176,255,.55)'; ctx.setLineDash([6,5]);   // equal-thirds guides
+  ctx.beginPath(); ctx.moveTo(bx,by+bh_/3); ctx.lineTo(bx+bw_,by+bh_/3);
+  ctx.moveTo(bx,by+2*bh_/3); ctx.lineTo(bx+bw_,by+2*bh_/3); ctx.stroke();
+  ctx.setLineDash([]); ctx.fillStyle='#5db0ff';                    // corner handles
+  [[bx,by],[bx+bw_,by],[bx,by+bh_],[bx+bw_,by+bh_]].forEach(p=>{ ctx.fillRect(p[0]-5,p[1]-5,10,10); });
 }
-let drag=null;
+// convert a mouse event to ORIGINAL-pixel coords
+function evToSrc(e){ const r=$('#panel').getBoundingClientRect();
+  return [ (e.clientX-r.left)/PW*srcW, (e.clientY-r.top)/viewH*srcH ]; }
+let mode=null, start=null, box0=null;   // mode: 'move' | corner index 0..3
 $('#panel').addEventListener('mousedown',e=>{
-  const r=e.target.getBoundingClientRect(), y=(e.clientY-r.top)/e.target.height, x=(e.clientX-r.left)/e.target.width;
-  if(samMode){ samPts.push([x,y,e.shiftKey?0:1]); drawPanel(); runSam(); return; }
-  drag=dividers.reduce((b,d,i)=>Math.abs(d-y)<Math.abs(dividers[b]-y)?i:b,0);
+  const [x,y]=evToSrc(e); const tol=12*srcW/PW;
+  const corners=[[box[0],box[1]],[box[2],box[1]],[box[0],box[3]],[box[2],box[3]]];
+  mode=null;
+  corners.forEach((c,i)=>{ if(Math.abs(x-c[0])<tol&&Math.abs(y-c[1])<tol) mode=i; });
+  if(mode===null && x>box[0]&&x<box[2]&&y>box[1]&&y<box[3]) mode='move';
+  if(mode!==null){ start=[x,y]; box0=box.slice(); }
 });
-window.addEventListener('mousemove',e=>{ if(drag===null)return;
-  const c=$('#panel'),r=c.getBoundingClientRect(); let y=(e.clientY-r.top)/c.height;
-  dividers[drag]=Math.min(.97,Math.max(.03,y)); drawPanel(); });
-window.addEventListener('mouseup',()=>drag=null);
+window.addEventListener('mousemove',e=>{ if(mode===null)return;
+  const [x,y]=evToSrc(e), dx=x-start[0], dy=y-start[1]; let b=box0.slice();
+  if(mode==='move'){ b=[box0[0]+dx,box0[1]+dy,box0[2]+dx,box0[3]+dy]; }
+  else { if(mode===0){b[0]+=dx;b[1]+=dy;} if(mode===1){b[2]+=dx;b[1]+=dy;}
+         if(mode===2){b[0]+=dx;b[3]+=dy;} if(mode===3){b[2]+=dx;b[3]+=dy;} }
+  box=[Math.round(Math.min(b[0],b[2])),Math.round(Math.min(b[1],b[3])),
+       Math.round(Math.max(b[0],b[2])),Math.round(Math.max(b[1],b[3]))]; drawPanel(); });
+window.addEventListener('mouseup',()=>mode=null);
 
-$('#seal').oninput=e=>{ $('#sealval').textContent = e.target.value==='0' ? 'auto' : ('bridge r='+e.target.value); };
 $('#recompute').onclick=async()=>{
   $('#status').textContent='recomputing tiles…';
-  const sv=$('#seal').value; const gap_seal = sv==='0' ? 'auto' : parseInt(sv);
-  const rr=await fetch('/api/retile/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({dividers,method:$('#method').value,gap_seal})});
-  const rj=await rr.json();                       // reflect the resolved cut method in the badge
-  if(rj.cut_method){ const reqm=$('#method').value;
-    $('#cutdecision').textContent = (rj.cut_method==='crop'?'CROP (not cuttable)':('cut: '+rj.cut_method))
-      + (reqm==='auto'?' · auto':''); }
+  await fetch('/api/retile/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({box})});
   $('#status').textContent='tiles updated'; renderTiles();
 };
 function renderTiles(){
-  const box=$('#tiles'); box.innerHTML='';
+  const t=$('#tiles'); t.innerHTML='';
   PARTS.forEach(p=>{ const d=document.createElement('div'); d.className='tile';
     d.innerHTML=`<img src="/api/file/${cur}/image/${p}.png?${Date.now()}"/><br><small>${p}</small>`;
-    d.querySelector('img').onclick=()=>openBrush(p); box.appendChild(d); });
+    t.appendChild(d); });
 }
-$('#samtoggle').onclick=e=>{ samMode=!samMode; samPts=[]; e.target.classList.toggle('on',samMode);
-  $('#samhint').textContent=samMode?'click=foreground, shift+click=background':''; drawPanel(); };
-async function runSam(){
-  $('#status').textContent='SAM…';
-  const h=panelImg.height, w=panelImg.width;
-  const pts=samPts.map(p=>[Math.round(p[0]*w),Math.round(p[1]*h),p[2]]);
-  const r=await fetch('/api/sam/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:pts})});
-  if(!r.ok){ $('#status').textContent='SAM unavailable — use brush instead'; samMode=false; $('#samtoggle').classList.remove('on'); return; }
-  window._sammask=await r.blob(); $('#status').textContent='SAM mask ready — click a tile to apply';
-}
-
-/* ---------- brush mask editor ---------- */
-let bctx,bbase,bmask,bmode='erase',bpart=null,bw,bh;
-async function openBrush(part){
-  bpart=part; const dlg=$('#brush'); $('#brushtitle').textContent='Edit mask — '+part;
-  // base = panel cell RGB; current alpha from tile is hard to map back, so start from cell + ink-ish:
-  const h=panelImg.height, ys=[0,dividers[0],dividers[1],1].map(v=>Math.round(v*h));
-  const idx=PARTS.indexOf(part), y0=ys[idx], y1=ys[idx+1], ch=y1-y0;
-  const tmp=document.createElement('canvas'); tmp.width=panelImg.width; tmp.height=ch;
-  tmp.getContext('2d').drawImage(panelImg,0,y0,panelImg.width,ch,0,0,panelImg.width,ch);
-  bbase=tmp;
-  const c=$('#bcanvas'); const sc=Math.min(420/tmp.width,1); bw=Math.round(tmp.width*sc); bh=Math.round(ch*sc);
-  c.width=bw; c.height=bh; bctx=c.getContext('2d');
-  // start mask from the existing tile alpha by loading it and matching is approximate; default: full opaque
-  bmask=new Uint8ClampedArray(bw*bh).fill(255);
-  // seed: load existing tile, but tiles are square-padded; instead seed from a quick luminance key
-  seedFromLuma(); paintPreview();
-  dlg.showModal();
-}
-function seedFromLuma(){
-  const t=document.createElement('canvas'); t.width=bw; t.height=bh;
-  t.getContext('2d').drawImage(bbase,0,0,bw,bh);
-  const d=t.getContext('2d').getImageData(0,0,bw,bh).data;
-  for(let i=0;i<bw*bh;i++){ const l=(d[i*4]+d[i*4+1]+d[i*4+2])/3; bmask[i]= l<205?255:0; }
-}
-function paintPreview(){
-  const t=document.createElement('canvas'); t.width=bw; t.height=bh;
-  const tc=t.getContext('2d'); tc.drawImage(bbase,0,0,bw,bh);
-  const im=tc.getImageData(0,0,bw,bh);
-  for(let i=0;i<bw*bh;i++) im.data[i*4+3]=bmask[i];
-  bctx.clearRect(0,0,bw,bh); bctx.putImageData(im,0,0);
-}
-$('#bmErase').onclick=e=>{bmode='erase';e.target.classList.add('on');$('#bmRestore').classList.remove('on');};
-$('#bmRestore').onclick=e=>{bmode='restore';e.target.classList.add('on');$('#bmErase').classList.remove('on');};
-let bdraw=false;
-$('#bcanvas').addEventListener('mousedown',()=>bdraw=true);
-window.addEventListener('mouseup',()=>bdraw=false);
-$('#bcanvas').addEventListener('mousemove',e=>{ if(!bdraw)return;
-  const r=e.target.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top, rad=+$('#bmR').value;
-  for(let dy=-rad;dy<=rad;dy++)for(let dx=-rad;dx<=rad;dx++){ if(dx*dx+dy*dy>rad*rad)continue;
-    const px=x+dx|0, py=y+dy|0; if(px<0||py<0||px>=bw||py>=bh)continue;
-    bmask[py*bw+px]= bmode==='erase'?0:255; }
-  paintPreview(); });
-$('#bCancel').onclick=()=>$('#brush').close();
-$('#bSave').onclick=async()=>{
-  // export at full panel-cell resolution
-  const fc=document.createElement('canvas'); fc.width=bbase.width; fc.height=bbase.height;
-  const fx=fc.getContext('2d'); fx.drawImage(bbase,0,0);
-  const im=fx.getImageData(0,0,fc.width,fc.height);
-  for(let y=0;y<fc.height;y++)for(let x=0;x<fc.width;x++){
-    const mx=Math.min(bw-1,x*bw/fc.width|0), my=Math.min(bh-1,y*bh/fc.height|0);
-    im.data[(y*fc.width+x)*4+3]=bmask[my*bw+mx]; }
-  fx.putImageData(im,0,0);
-  const blob=await new Promise(r=>fc.toBlob(r,'image/png'));
-  await fetch('/api/savetile/'+cur+'/'+bpart,{method:'POST',body:blob});
-  $('#brush').close(); renderTiles();
-};
 
 /* ---------- audio ---------- */
 function renderAudio(){
