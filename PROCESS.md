@@ -149,7 +149,18 @@ Only ids marked reviewed are exported (override with `--include-unreviewed`). Ev
 `pair-NNN` token so the website links the 6 assets of a story. `manifest.json` lists, per story, the
 6 asset paths + chapter texts + split method + `unpaired` flag.
 
-**Then upload `READY_FOR_DRIVE/` to Google Drive by hand** (staging only; the kit doesn't push).
+## Step 5 — publish to Google Drive
+
+`export.py` only *stages* into `READY_FOR_DRIVE/`; it never touches the network or stores any
+credentials (so nothing secret lives in this repo). Uploading is a separate, final step:
+
+- **By hand:** drag `READY_FOR_DRIVE/`'s six asset folders + `manifest.json` into the Drive folder.
+- **As a routine (recommended):** have the agent (e.g. cowork) upload `READY_FOR_DRIVE/**` to a
+  target Drive folder using **its own connected Google Drive** — preserve the folder names
+  (`IMAGES_TOP/ … AUDIO_END/`) and `manifest.json`, and don't rename files (the `pair-NNN` token is
+  the association key). Credentials stay in the agent's environment, never in the repo. If you prefer
+  a CLI instead, configure `rclone` locally and `rclone copy READY_FOR_DRIVE <remote>:<folder>` —
+  the `rclone` config is machine-local and git-ignored.
 
 ## Leftovers (`__nopair`)
 `__nopair` images still produce 3 tiles; `__nopair` audio still splits. They appear in `WORK/` as
