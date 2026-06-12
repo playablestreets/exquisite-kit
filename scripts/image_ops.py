@@ -166,23 +166,28 @@ def character_bbox(img_bgr: np.ndarray, panel_rect: list[int],
 
 # ------------------------------------------------------------------------- 4. fit the 1:3 crop box
 def fit_target_box(img_shape: tuple[int, int], content_bbox: list[int],
-                   anchors: list[float] | None = None, pad_frac: float = 0.06) -> list[int]:
+                   anchors: list[float] | None = None, pad_frac: float = 0.06,
+                   bounds: list[int] | None = None) -> list[int]:
     """Grow content_bbox (orig coords) into a 1:3 box (height = 3*width — three stacked squares),
-    centred horizontally on the content, padded a little, clamped to the image. `anchors` are two
+    centred horizontally on the content, padded a little, kept INSIDE `bounds`. `bounds` is the
+    rectangle the box may not exceed — the inset workbook panel border (so we never spill into the
+    printed frame / page margin), or the whole image when there's no panel. `anchors` are two
     absolute y's (the dotted dividers, or Claude's neck/waist) used to place the box vertically so
     the equal-thirds cut lines land on them; otherwise the box is centred on the content."""
     H_img, W_img = img_shape[:2]
+    bx0, by0, bx1, by1 = bounds if bounds is not None else [0, 0, W_img, H_img]
+    bw, bh = max(1, bx1 - bx0), max(1, by1 - by0)
+
     x0, y0, x1, y1 = content_bbox
     cw, ch = max(1, x1 - x0), max(1, y1 - y0)
     cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
     cw *= (1 + 2 * pad_frac); ch *= (1 + 2 * pad_frac)
 
+    # largest 1:3 box that fits the bounds (so a panel-filling figure crops to the panel itself,
+    # tight inside its border, instead of spilling past it and getting clamped to the page edge)
     W = max(cw, ch / 3.0)
+    W = min(W, float(bw), bh / 3.0)
     H = 3.0 * W
-    if H > H_img:
-        H = float(H_img); W = H / 3.0
-    if W > W_img:
-        W = float(W_img); H = min(3.0 * W, float(H_img))
 
     # vertical placement: anchor on the two divider/cut lines if they look like real thirds
     top = cy - H / 2.0
@@ -191,10 +196,10 @@ def fit_target_box(img_shape: tuple[int, int], content_bbox: list[int],
         if a2 - a1 > 0.15 * H:                          # plausible spacing for two third-lines
             top = ((a1 - H / 3.0) + (a2 - 2.0 * H / 3.0)) / 2.0
 
-    left = cx - W / 2.0
-    left = _clampi(left, 0, max(0, W_img - int(round(W))))
-    top = _clampi(top, 0, max(0, H_img - int(round(H))))
-    return [left, top, left + int(round(W)), top + int(round(H))]
+    iW, iH = int(round(W)), int(round(H))
+    left = _clampi(cx - W / 2.0, bx0, bx1 - iW)
+    top = _clampi(top, by0, by1 - iH)
+    return [left, top, left + iW, top + iH]
 
 
 # ----------------------------------------------------------------- 5. confidence gate (escalation)
@@ -314,7 +319,13 @@ def propose(image_path: str, out_dir: str, use_claude: bool = True,
     char_bbox, _ink = character_bbox(img, panel_rect, dividers)
 
     anchors = [py0 + d * (py1 - py0) for d in dividers]
-    box = fit_target_box((H, W), char_bbox, anchors=anchors)
+    # On a real workbook panel, keep the box inside the panel's (inset) inner border so a
+    # panel-filling figure crops tight to the border instead of spilling into the printed frame.
+    bounds = None
+    if pinfo.get("method") != "fallback-right-half":
+        ins = int(round(0.02 * min(px1 - px0, py1 - py0)))
+        bounds = [px0 + ins, py0 + ins, px1 - ins, py1 - ins]
+    box = fit_target_box((H, W), char_bbox, anchors=anchors, bounds=bounds)
     conf, reasons = box_confidence(pinfo, char_bbox, box, dividers, panel_rect)
 
     engine = "opencv"
