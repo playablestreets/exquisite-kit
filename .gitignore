@@ -1,0 +1,24 @@
+# environment & models (recreated by SETUP.md)
+.venv/
+checkpoints/*
+!checkpoints/.gitkeep
+__pycache__/
+*.pyc
+
+# pipeline DATA — folders are scaffolded (.gitkeep) but their contents are never committed.
+# This is what keeps children's photos / audio / derived assets out of the (public) repo.
+/INBOX/*
+!/INBOX/.gitkeep
+/PROCESSING/*
+!/PROCESSING/.gitkeep
+/WORK/*
+!/WORK/.gitkeep
+/READY_FOR_DRIVE/*
+!/READY_FOR_DRIVE/.gitkeep
+
+# scratch / local experiments
+_scratch*/
+_smoke*/
+_autotest*/
+._*test/
+.DS_Store

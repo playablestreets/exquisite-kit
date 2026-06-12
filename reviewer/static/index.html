@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Exquisite Stories — Reviewer</title>
+<style>
+  :root { --bg:#15171c; --panel:#1e2229; --ink:#e8eaed; --muted:#8b93a1; --accent:#5db0ff; --good:#42c98a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--ink); display:flex; height:100vh; }
+  #side { width:230px; border-right:1px solid #2a2f38; overflow:auto; padding:8px; }
+  #side h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+  .idrow { padding:6px 8px; border-radius:6px; cursor:pointer; display:flex; justify-content:space-between; gap:6px; }
+  .idrow:hover { background:#262b34; }
+  .idrow.active { background:#2d3a4d; }
+  .badge { font-size:11px; color:var(--muted); }
+  .badge.r { color:var(--good); }
+  main { flex:1; overflow:auto; padding:16px; }
+  .cols { display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap; }
+  .card { background:var(--panel); border:1px solid #2a2f38; border-radius:10px; padding:14px; }
+  h3 { margin:.2em 0 .6em; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+  button { background:#2c333d; color:var(--ink); border:1px solid #3a424d; border-radius:6px; padding:6px 10px; cursor:pointer; }
+  button:hover { background:#36404c; }
+  button.primary { background:var(--accent); color:#06203a; border-color:var(--accent); font-weight:600; }
+  button.go { background:var(--good); color:#04241a; border-color:var(--good); font-weight:600; }
+  .wrap { position:relative; display:inline-block; }
+  canvas { display:block; border-radius:6px; }
+  .tiles { display:flex; gap:10px; margin-top:10px; }
+  .tile { text-align:center; }
+  .tile img { width:120px; height:120px; object-fit:contain; background:
+      conic-gradient(#3a3f48 25%, #2b2f37 0 50%, #3a3f48 0 75%, #2b2f37 0) 0/16px 16px; border-radius:6px; cursor:pointer; }
+  .tile small { color:var(--muted); }
+  .row { display:flex; gap:8px; align-items:center; margin:8px 0; flex-wrap:wrap; }
+  .chap textarea { width:230px; height:42px; background:#12151a; color:var(--ink); border:1px solid #2a2f38; border-radius:6px; padding:6px; }
+  #audtl { position:relative; height:60px; background:#12151a; border-radius:6px; margin-top:6px; }
+  .seg { position:absolute; top:0; bottom:0; opacity:.18; }
+  .handle { position:absolute; top:0; bottom:0; width:10px; margin-left:-5px; background:var(--accent); cursor:ew-resize; border-radius:3px; }
+  .seglabel { position:absolute; bottom:2px; font-size:11px; color:var(--muted); pointer-events:none; }
+  audio { width:230px; display:block; margin:4px 0; }
+  #status { color:var(--muted); margin-left:8px; }
+  dialog { background:var(--panel); color:var(--ink); border:1px solid #3a424d; border-radius:12px; padding:16px; }
+  .toolbtn.on { outline:2px solid var(--accent); }
+</style>
+</head>
+<body>
+<aside id="side"><h2>Stories</h2><div id="idlist"></div></aside>
+<main>
+  <div class="row"><h2 id="title" style="margin:0">—</h2><span id="status"></span></div>
+  <div class="cols">
+    <!-- IMAGE -->
+    <section class="card" id="imgcard">
+      <h3>Image — drag the 2 divider lines, then recompute</h3>
+      <div class="wrap"><canvas id="panel"></canvas></div>
+      <div class="row">
+        <button id="recompute" class="primary">Recompute tiles</button>
+        <label>mask:
+          <select id="method">
+            <option value="auto" selected>auto — gate picks cut-out, else crop</option>
+            <option value="fill">fill — scissor cut-out (line art)</option>
+            <option value="matte">matte — BiRefNet</option>
+            <option value="luma">luma — luminance key</option>
+            <option value="crop">crop — no cut, thirds on solid bg</option>
+          </select>
+        </label>
+        <span class="badge" id="cutdecision"></span>
+        <button id="samtoggle" class="toolbtn">SAM click</button>
+        <span class="badge" id="samhint"></span>
+      </div>
+      <div class="row" id="sealrow">
+        fill leaks <input type="range" id="seal" min="0" max="22" value="0" style="width:120px"/>
+        <span class="badge" id="sealval">auto</span>
+        <span class="badge">0 = off · auto · drag right to bridge a wider gap (e.g. an open belly)</span>
+      </div>
+      <div class="tiles" id="tiles"></div>
+    </section>
+    <!-- AUDIO -->
+    <section class="card" id="audcard">
+      <h3>Audio — drag the 4 edges (orange = story start/end, blue/green = chapter cuts), then re-split</h3>
+      <div class="chap" id="chapters"></div>
+      <div class="row"><button id="savechap">Save chapter texts</button>
+        <button id="reprop">Re-detect cuts from chapters</button></div>
+      <div id="audtl"></div>
+      <div class="row"><button id="resplit" class="primary">Re-split audio</button>
+        <span class="badge" id="audmethod"></span></div>
+      <div id="players"></div>
+    </section>
+  </div>
+  <div class="row" style="margin-top:18px">
+    <button id="save" class="go">✓ Save &amp; mark reviewed</button>
+    <button id="next">Next unreviewed →</button>
+  </div>
+</main>
+
+<dialog id="brush">
+  <h3 id="brushtitle">Edit mask</h3>
+  <div class="row">
+    <button id="bmErase" class="toolbtn on">Erase</button>
+    <button id="bmRestore" class="toolbtn">Restore</button>
+    radius <input id="bmR" type="range" min="4" max="60" value="18"/>
+  </div>
+  <canvas id="bcanvas" style="background:
+     conic-gradient(#3a3f48 25%,#2b2f37 0 50%,#3a3f48 0 75%,#2b2f37 0) 0/16px 16px;"></canvas>
+  <div class="row"><button id="bSave" class="go">Apply</button><button id="bCancel">Cancel</button></div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+let cur=null, item=null, panelImg=new Image(), dividers=[0.33,0.66], samMode=false, samPts=[];
+const PARTS=['top','middle','bottom'], AUD=['beginning','middle','end'];
+
+async function loadIds(){
+  const ids = await (await fetch('/api/ids')).json();
+  const box=$('#idlist'); box.innerHTML='';
+  ids.forEach(o=>{
+    const d=document.createElement('div'); d.className='idrow'+(o.id===cur?' active':'');
+    d.innerHTML=`<span>${o.id}</span><span class="badge ${o.reviewed?'r':''}">`
+      +`${o.reviewed?'✓':''}${o.unpaired?' ⚠':''}</span>`;
+    d.onclick=()=>load(o.id); box.appendChild(d);
+  });
+  window._ids=ids;
+}
+
+async function load(id){
+  cur=id; item=await (await fetch('/api/item/'+id)).json();
+  $('#title').textContent=id; $('#status').textContent='';
+  loadIds();
+  // IMAGE
+  if(item.image_state){ $('#imgcard').style.display='';
+    const ist=item.image_state;
+    dividers=ist.dividers.slice();
+    if(ist.method) $('#method').value=ist.method;
+    // surface the hands-off decision: chosen cut method (or "crop" fallback) + format/trim
+    const dec=[]; if(ist.kind) dec.push(ist.kind);
+    if(ist.cut_method) dec.push(ist.cut_method==='crop'?'CROP (not cuttable)':('cut: '+ist.cut_method));
+    if(ist.trim && ist.trim.applied) dec.push('border-trimmed');
+    $('#cutdecision').textContent=dec.join(' · ');
+    panelImg=new Image();
+    panelImg.onload=drawPanel;
+    panelImg.src='/api/file/'+id+'/image/panel.png?'+Date.now();
+    renderTiles();
+  } else $('#imgcard').style.display='none';
+  // AUDIO
+  if(item.audio_state){ $('#audcard').style.display=''; renderAudio(); }
+  else $('#audcard').style.display='none';
+}
+
+/* ---------- image: panel + dividers ---------- */
+const PW=380;
+function drawPanel(){
+  const c=$('#panel'), scale=PW/panelImg.width, h=panelImg.height*scale;
+  c.width=PW; c.height=h; const ctx=c.getContext('2d');
+  ctx.drawImage(panelImg,0,0,PW,h);
+  dividers.forEach((dy)=>{ const y=dy*h;
+    ctx.strokeStyle='#5db0ff'; ctx.lineWidth=2; ctx.setLineDash([7,5]);
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(PW,y); ctx.stroke(); });
+  if(samMode){ ctx.setLineDash([]); samPts.forEach(p=>{ ctx.fillStyle=p[2]?'#42c98a':'#ff5d5d';
+    ctx.beginPath(); ctx.arc(p[0]*PW,p[1]*h,5,0,7); ctx.fill(); }); }
+}
+let drag=null;
+$('#panel').addEventListener('mousedown',e=>{
+  const r=e.target.getBoundingClientRect(), y=(e.clientY-r.top)/e.target.height, x=(e.clientX-r.left)/e.target.width;
+  if(samMode){ samPts.push([x,y,e.shiftKey?0:1]); drawPanel(); runSam(); return; }
+  drag=dividers.reduce((b,d,i)=>Math.abs(d-y)<Math.abs(dividers[b]-y)?i:b,0);
+});
+window.addEventListener('mousemove',e=>{ if(drag===null)return;
+  const c=$('#panel'),r=c.getBoundingClientRect(); let y=(e.clientY-r.top)/c.height;
+  dividers[drag]=Math.min(.97,Math.max(.03,y)); drawPanel(); });
+window.addEventListener('mouseup',()=>drag=null);
+
+$('#seal').oninput=e=>{ $('#sealval').textContent = e.target.value==='0' ? 'auto' : ('bridge r='+e.target.value); };
+$('#recompute').onclick=async()=>{
+  $('#status').textContent='recomputing tiles…';
+  const sv=$('#seal').value; const gap_seal = sv==='0' ? 'auto' : parseInt(sv);
+  const rr=await fetch('/api/retile/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({dividers,method:$('#method').value,gap_seal})});
+  const rj=await rr.json();                       // reflect the resolved cut method in the badge
+  if(rj.cut_method){ const reqm=$('#method').value;
+    $('#cutdecision').textContent = (rj.cut_method==='crop'?'CROP (not cuttable)':('cut: '+rj.cut_method))
+      + (reqm==='auto'?' · auto':''); }
+  $('#status').textContent='tiles updated'; renderTiles();
+};
+function renderTiles(){
+  const box=$('#tiles'); box.innerHTML='';
+  PARTS.forEach(p=>{ const d=document.createElement('div'); d.className='tile';
+    d.innerHTML=`<img src="/api/file/${cur}/image/${p}.png?${Date.now()}"/><br><small>${p}</small>`;
+    d.querySelector('img').onclick=()=>openBrush(p); box.appendChild(d); });
+}
+$('#samtoggle').onclick=e=>{ samMode=!samMode; samPts=[]; e.target.classList.toggle('on',samMode);
+  $('#samhint').textContent=samMode?'click=foreground, shift+click=background':''; drawPanel(); };
+async function runSam(){
+  $('#status').textContent='SAM…';
+  const h=panelImg.height, w=panelImg.width;
+  const pts=samPts.map(p=>[Math.round(p[0]*w),Math.round(p[1]*h),p[2]]);
+  const r=await fetch('/api/sam/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({points:pts})});
+  if(!r.ok){ $('#status').textContent='SAM unavailable — use brush instead'; samMode=false; $('#samtoggle').classList.remove('on'); return; }
+  window._sammask=await r.blob(); $('#status').textContent='SAM mask ready — click a tile to apply';
+}
+
+/* ---------- brush mask editor ---------- */
+let bctx,bbase,bmask,bmode='erase',bpart=null,bw,bh;
+async function openBrush(part){
+  bpart=part; const dlg=$('#brush'); $('#brushtitle').textContent='Edit mask — '+part;
+  // base = panel cell RGB; current alpha from tile is hard to map back, so start from cell + ink-ish:
+  const h=panelImg.height, ys=[0,dividers[0],dividers[1],1].map(v=>Math.round(v*h));
+  const idx=PARTS.indexOf(part), y0=ys[idx], y1=ys[idx+1], ch=y1-y0;
+  const tmp=document.createElement('canvas'); tmp.width=panelImg.width; tmp.height=ch;
+  tmp.getContext('2d').drawImage(panelImg,0,y0,panelImg.width,ch,0,0,panelImg.width,ch);
+  bbase=tmp;
+  const c=$('#bcanvas'); const sc=Math.min(420/tmp.width,1); bw=Math.round(tmp.width*sc); bh=Math.round(ch*sc);
+  c.width=bw; c.height=bh; bctx=c.getContext('2d');
+  // start mask from the existing tile alpha by loading it and matching is approximate; default: full opaque
+  bmask=new Uint8ClampedArray(bw*bh).fill(255);
+  // seed: load existing tile, but tiles are square-padded; instead seed from a quick luminance key
+  seedFromLuma(); paintPreview();
+  dlg.showModal();
+}
+function seedFromLuma(){
+  const t=document.createElement('canvas'); t.width=bw; t.height=bh;
+  t.getContext('2d').drawImage(bbase,0,0,bw,bh);
+  const d=t.getContext('2d').getImageData(0,0,bw,bh).data;
+  for(let i=0;i<bw*bh;i++){ const l=(d[i*4]+d[i*4+1]+d[i*4+2])/3; bmask[i]= l<205?255:0; }
+}
+function paintPreview(){
+  const t=document.createElement('canvas'); t.width=bw; t.height=bh;
+  const tc=t.getContext('2d'); tc.drawImage(bbase,0,0,bw,bh);
+  const im=tc.getImageData(0,0,bw,bh);
+  for(let i=0;i<bw*bh;i++) im.data[i*4+3]=bmask[i];
+  bctx.clearRect(0,0,bw,bh); bctx.putImageData(im,0,0);
+}
+$('#bmErase').onclick=e=>{bmode='erase';e.target.classList.add('on');$('#bmRestore').classList.remove('on');};
+$('#bmRestore').onclick=e=>{bmode='restore';e.target.classList.add('on');$('#bmErase').classList.remove('on');};
+let bdraw=false;
+$('#bcanvas').addEventListener('mousedown',()=>bdraw=true);
+window.addEventListener('mouseup',()=>bdraw=false);
+$('#bcanvas').addEventListener('mousemove',e=>{ if(!bdraw)return;
+  const r=e.target.getBoundingClientRect(), x=e.clientX-r.left, y=e.clientY-r.top, rad=+$('#bmR').value;
+  for(let dy=-rad;dy<=rad;dy++)for(let dx=-rad;dx<=rad;dx++){ if(dx*dx+dy*dy>rad*rad)continue;
+    const px=x+dx|0, py=y+dy|0; if(px<0||py<0||px>=bw||py>=bh)continue;
+    bmask[py*bw+px]= bmode==='erase'?0:255; }
+  paintPreview(); });
+$('#bCancel').onclick=()=>$('#brush').close();
+$('#bSave').onclick=async()=>{
+  // export at full panel-cell resolution
+  const fc=document.createElement('canvas'); fc.width=bbase.width; fc.height=bbase.height;
+  const fx=fc.getContext('2d'); fx.drawImage(bbase,0,0);
+  const im=fx.getImageData(0,0,fc.width,fc.height);
+  for(let y=0;y<fc.height;y++)for(let x=0;x<fc.width;x++){
+    const mx=Math.min(bw-1,x*bw/fc.width|0), my=Math.min(bh-1,y*bh/fc.height|0);
+    im.data[(y*fc.width+x)*4+3]=bmask[my*bw+mx]; }
+  fx.putImageData(im,0,0);
+  const blob=await new Promise(r=>fc.toBlob(r,'image/png'));
+  await fetch('/api/savetile/'+cur+'/'+bpart,{method:'POST',body:blob});
+  $('#brush').close(); renderTiles();
+};
+
+/* ---------- audio ---------- */
+function renderAudio(){
+  const st=item.audio_state; $('#audmethod').textContent='detected: '+st.method;
+  const ch=$('#chapters'); ch.innerHTML='';
+  (st.chapters||['','','']).forEach((c,i)=>{ const w=document.createElement('div');
+    w.innerHTML=`<small>CHAPTER ${i+1}</small><br><textarea>${c||''}</textarea>`; ch.appendChild(w); });
+  drawTimeline(); renderPlayers();
+}
+function drawTimeline(){
+  const st=item.audio_state, T=st.total, tl=$('#audtl'); tl.innerHTML='';
+  const cols=['#5db0ff','#42c98a','#ffb454']; const edges=st.edges; // [e0,e1,e2,e3]
+  // dim regions outside the story (before e0 / after e3) so trimmed preamble/chatter is visible
+  for(let i=0;i<3;i++){ const s=document.createElement('div'); s.className='seg';
+    s.style.left=(edges[i]/T*100)+'%'; s.style.width=((edges[i+1]-edges[i])/T*100)+'%';
+    s.style.background=cols[i]; tl.appendChild(s);
+    const lab=document.createElement('div'); lab.className='seglabel'; lab.style.left=(edges[i]/T*100+1)+'%';
+    lab.textContent=AUD[i]; tl.appendChild(lab); }
+  const tips=['story start','ch1→ch2','ch2→ch3','story end'];
+  edges.forEach((b,i)=>{ const h=document.createElement('div'); h.className='handle'; h.title=tips[i];
+    h.style.left=(b/T*100)+'%'; if(i===0||i===3) h.style.background='#ffb454';
+    h.onmousedown=ev=>{ ev.preventDefault(); const move=e=>{ const r=tl.getBoundingClientRect();
+        let t=Math.min(T,Math.max(0,(e.clientX-r.left)/r.width*T)); st.edges[i]=+t.toFixed(2);
+        st.edges.sort((a,b)=>a-b); drawTimeline(); };
+      const up=()=>{document.removeEventListener('mousemove',move);document.removeEventListener('mouseup',up);};
+      document.addEventListener('mousemove',move); document.addEventListener('mouseup',up); };
+    tl.appendChild(h); });
+}
+function renderPlayers(){
+  const p=$('#players'); p.innerHTML='';
+  AUD.forEach(part=>{ const a=document.createElement('audio'); a.controls=true;
+    a.src='/api/file/'+cur+'/audio/'+part+'.wav?'+Date.now();
+    const l=document.createElement('small'); l.textContent=part+': '; p.appendChild(l); p.appendChild(a); });
+}
+$('#resplit').onclick=async()=>{ $('#status').textContent='re-splitting…';
+  await fetch('/api/resplit/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({edges:item.audio_state.edges})});
+  $('#status').textContent='audio updated'; renderPlayers(); };
+$('#savechap').onclick=async()=>{ const texts=[...$('#chapters').querySelectorAll('textarea')].map(t=>t.value);
+  await fetch('/api/chapters/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({chapters:texts})}); item.audio_state.chapters=texts; $('#status').textContent='chapters saved'; };
+$('#reprop').onclick=async()=>{ $('#status').textContent='re-detecting…';
+  // reuse server alignment by re-splitting after saving chapters then reloading proposal is heavier;
+  // simplest: save chapters, then ask user to use draggable handles. We nudge via resplit of detected.
+  await $('#savechap').onclick(); $('#status').textContent='chapters saved — drag handles or re-run process.py for full re-align'; };
+
+/* ---------- save / next ---------- */
+$('#save').onclick=async()=>{ await fetch('/api/save/'+cur,{method:'POST'});
+  $('#status').textContent='saved ✓ reviewed'; loadIds(); };
+$('#next').onclick=()=>{ const n=(window._ids||[]).find(o=>!o.reviewed && o.id!==cur)||(window._ids||[]).find(o=>!o.reviewed);
+  if(n) load(n.id); };
+
+loadIds();
+</script>
+</body>
+</html>

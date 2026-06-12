@@ -1,0 +1,36 @@
+# Exquisite Stories pipeline — Python 3.11 venv (see SETUP.md).
+# Pinned to majors known to ship wheels for Python 3.11 on macOS (arm64) and Linux.
+
+# --- core image / array ---
+numpy>=1.26,<2.2
+opencv-python>=4.9,<5
+pillow>=10.2
+
+# --- background removal / segmentation ---
+rembg>=2.0.59            # BiRefNet + U2Net background removal (onnxruntime backend)
+onnxruntime>=1.17        # CPU; swap for onnxruntime-gpu on CUDA boxes
+# SAM 2 (interactive mask refinement in the reviewer) is installed from git in SETUP.md,
+# because it is not reliably on PyPI:
+#   pip install "git+https://github.com/facebookresearch/sam2.git"
+
+# --- torch (SAM 2 backend; MPS on Apple Silicon, CUDA on Linux) ---
+torch>=2.2
+torchvision>=0.17
+
+# --- audio: transcription + alignment + io ---
+whisperx>=3.1            # word-level timestamps (faster-whisper + wav2vec align)
+soundfile>=0.12
+librosa>=0.10
+pydub>=0.25
+
+# --- chapter text reading (optional automated fallback; default uses the Claude orchestrator) ---
+anthropic>=0.40
+
+# --- reviewer web app ---
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9  # form/file uploads from the reviewer canvas
+
+# --- misc ---
+rapidfuzz>=3.6           # fuzzy alignment of chapter text to transcript words
+tqdm>=4.66
