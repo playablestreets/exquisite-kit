@@ -84,9 +84,8 @@ Per pair this:
   and story end — so adult preamble before and chatter after the story are trimmed off, not just the
   interior cuts. The recording is split + silence-trimmed into 3 clips.
 
-`--in` can also point at the already-tagged `TO_PROCESS` batch (it discovers files by `pair-NNN`
-token regardless of folder layout). `--no-model` skips BiRefNet for a fast luminance-key dry run.
-Already-built ids are skipped; use `--only` to force a rebuild.
+`--in` can point at any folder of already-tagged files (it discovers them by `pair-NNN` token
+regardless of folder layout). Already-built ids are skipped; use `--only` to force a rebuild.
 
 > **Performance:** the `auto` gate runs the fast OpenCV `fill` on every image (~0.2 s) and only
 > spends a BiRefNet `matte` pass (~1–2 min on a Mac CPU via onnxruntime) where it can help — when
@@ -139,7 +138,7 @@ The tool is resumable — reviewed state persists in `status.json`; close and re
 ```bash
 python scripts/export.py --work WORK --out READY_FOR_DRIVE
 ```
-Produces (mirrors `EXAMPLE_COMPLETE/`):
+Produces:
 ```
 READY_FOR_DRIVE/
   IMAGES_TOP/pair-007_top.png   IMAGES_MIDDLE/pair-007_middle.png   IMAGES_BOTTOM/pair-007_bottom.png
@@ -158,7 +157,7 @@ Only ids marked reviewed are exported (override with `--include-unreviewed`). Ev
 `"unpaired": true` in the manifest so the website can decide whether to use them.
 
 ## Verify (see also the plan's verification section)
-- `READY_FOR_DRIVE/` mirrors `EXAMPLE_COMPLETE/`; counts match reviewed ids × assets.
+- `READY_FOR_DRIVE/` has the 6 asset folders + `manifest.json`; counts match reviewed ids × assets.
 - Each PNG: square, has alpha, background gone, pencil retained (`sips -g hasAlpha -g pixelWidth`).
 - Each WAV: starts/ends on its chapter, silence trimmed; durations present in `manifest.json`.
 - Every `pair-NNN` appears once per relevant asset folder; manifest links all 6.

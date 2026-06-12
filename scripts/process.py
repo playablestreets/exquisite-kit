@@ -135,11 +135,17 @@ def download_models() -> int:
     except Exception as e:
         print(f"  [!!] BiRefNet: {e}")
     try:
-        import whisperx
-        whisperx.load_model("small", "cpu", compute_type="int8")
-        print("  [ok] Whisper(small) cached")
+        from faster_whisper import WhisperModel       # primary transcription backend
+        WhisperModel("small", device="cpu", compute_type="int8")
+        print("  [ok] faster-whisper(small) cached")
     except Exception as e:
-        print(f"  [!!] whisperx: {e}")
+        print(f"  [!!] faster-whisper: {e}")
+        try:
+            import whisperx
+            whisperx.load_model("small", "cpu", compute_type="int8")
+            print("  [ok] whisperx(small) cached (fallback)")
+        except Exception as e2:
+            print(f"  [!!] whisperx: {e2}")
     ckpt = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "checkpoints"))
     os.makedirs(ckpt, exist_ok=True)
     sam = os.path.join(ckpt, "sam2.1_hiera_base_plus.pt")

@@ -86,7 +86,7 @@ Expected output (abridged):
 [ok] ffmpeg / ffprobe / exiftool found
 [ok] torch 2.x  device=mps            # or cuda / cpu
 [ok] rembg BiRefNet session created
-[ok] whisperx model loaded
+[ok] faster-whisper importable
 [ok] SAM2 checkpoint present
 [ok] chapter reading: claude-orchestrator (or: anthropic-api)
 SELFCHECK PASSED

@@ -18,7 +18,8 @@ torch>=2.2
 torchvision>=0.17
 
 # --- audio: transcription + alignment + io ---
-whisperx>=3.1            # word-level timestamps (faster-whisper + wav2vec align)
+faster-whisper>=1.0      # PRIMARY backend: word-level timestamps, stable API (CTranslate2 Whisper)
+whisperx>=3.1            # fallback transcription + wav2vec align (faster-whisper preferred over it)
 soundfile>=0.12
 librosa>=0.10
 pydub>=0.25

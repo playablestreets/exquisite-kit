@@ -74,6 +74,7 @@ PY
 Spot-check a couple of pairs: the audio `creation_time` should be a few seconds **after** its
 image's `DateTimeOriginal`. Then proceed to [PROCESS.md](PROCESS.md).
 
-> **Note on the existing batch in this repo:** `TO_PROCESS/NEW AUDIO MPRG` + `NEW IMAGES MPRG` were
-> already matched and tagged by an earlier run of this method. You can feed them straight into
-> `process` (point `--in` at them) to validate stage 2 without re-running match.
+> **Already-tagged batches:** if you have a folder whose files already carry `__pair-NNN` /
+> `__nopair` suffixes from a previous match run, you can skip match and feed it straight into
+> `process` (point `--in` at it) — discovery is by token, regardless of folder layout. Source media
+> is never committed to this repo, so you always supply the batch locally.
