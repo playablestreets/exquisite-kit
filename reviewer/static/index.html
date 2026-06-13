@@ -48,11 +48,18 @@
   <div class="cols">
     <!-- IMAGE -->
     <section class="card" id="imgcard">
-      <h3>Image — drag the box to move, drag a corner to resize, then recompute</h3>
+      <h3>Image — drag a box to move, drag a corner to resize, then recompute</h3>
       <div class="wrap"><canvas id="panel"></canvas></div>
       <div class="row">
+        <button id="indepbtn" class="toolbtn">Independent boxes: off</button>
         <button id="recompute" class="primary">Recompute tiles</button>
         <span class="badge" id="boxinfo"></span>
+      </div>
+      <div class="row" id="indeplegend" style="display:none">
+        <span class="badge"><span style="color:#5db0ff">■</span> top/head</span>
+        <span class="badge"><span style="color:#42c98a">■</span> middle/torso</span>
+        <span class="badge"><span style="color:#ffb454">■</span> bottom/legs</span>
+        <span class="badge">— each box crops anywhere on the page, independently.</span>
       </div>
       <div class="tiles" id="tiles"></div>
     </section>
@@ -76,8 +83,9 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let cur=null, item=null, srcImg=new Image(), box=[0,0,0,0], srcW=1, srcH=1;
+let cur=null, item=null, srcImg=new Image(), box=[0,0,0,0], boxes=null, indep=false, srcW=1, srcH=1;
 const PARTS=['top','middle','bottom'], AUD=['beginning','middle','end'];
+const COLORS={top:'#5db0ff', middle:'#42c98a', bottom:'#ffb454'};
 
 async function loadIds(){
   const ids = await (await fetch('/api/ids')).json();
@@ -99,8 +107,11 @@ async function load(id){
   if(item.image_state){ $('#imgcard').style.display='';
     const ist=item.image_state;
     box=ist.box.slice(); [srcW,srcH]=ist.source_size;
+    boxes = ist.boxes ? {top:ist.boxes.top.slice(), middle:ist.boxes.middle.slice(), bottom:ist.boxes.bottom.slice()} : null;
+    indep = !!boxes; updateIndepBtn();
     $('#boxinfo').textContent=`${ist.kind} · ${ist.source_engine} · conf ${ist.confidence}`
-      +(ist.gate_reasons&&ist.gate_reasons.length?(' · '+ist.gate_reasons.join(',')):'');
+      +(ist.gate_reasons&&ist.gate_reasons.length?(' · '+ist.gate_reasons.join(',')):'')
+      +(indep?' · 3-box':'');
     srcImg=new Image();
     srcImg.onload=drawPanel;
     srcImg.src='/api/file/'+id+'/image/source.png?'+Date.now();
@@ -113,45 +124,75 @@ async function load(id){
 
 /* ---------- image: crop box editor over the source photo ---------- */
 const PW=380; let viewH=0, sc=1;   // sc = displayed px per source px
+function updateIndepBtn(){ const b=$('#indepbtn');
+  b.textContent='Independent boxes: '+(indep?'on':'off'); b.classList.toggle('on',indep);
+  $('#indeplegend').style.display = indep?'':'none'; }
+// draw one rect (box in ORIGINAL px) onto the preview canvas, with corner handles
+function drawBox(ctx,b,col,sx,sy,opts){ opts=opts||{};
+  const bx=b[0]*sx, by=b[1]*sy, bw_=(b[2]-b[0])*sx, bh_=(b[3]-b[1])*sy;
+  ctx.setLineDash([]); ctx.strokeStyle=col; ctx.lineWidth=2; ctx.strokeRect(bx,by,bw_,bh_);
+  if(opts.thirds){ ctx.strokeStyle='rgba(93,176,255,.55)'; ctx.setLineDash([6,5]);
+    ctx.beginPath(); ctx.moveTo(bx,by+bh_/3); ctx.lineTo(bx+bw_,by+bh_/3);
+    ctx.moveTo(bx,by+2*bh_/3); ctx.lineTo(bx+bw_,by+2*bh_/3); ctx.stroke(); ctx.setLineDash([]); }
+  ctx.fillStyle=col;
+  [[bx,by],[bx+bw_,by],[bx,by+bh_],[bx+bw_,by+bh_]].forEach(p=>ctx.fillRect(p[0]-5,p[1]-5,10,10));
+  if(opts.label){ ctx.font='bold 12px system-ui'; ctx.fillText(opts.label, bx+5, by+15); }
+}
 function drawPanel(){
   const c=$('#panel'); sc=PW/srcImg.width; viewH=srcImg.height*sc;
   c.width=PW; c.height=viewH; const ctx=c.getContext('2d');
   ctx.drawImage(srcImg,0,0,PW,viewH);
-  // box scaled into the (downscaled) source preview. box is in ORIGINAL pixels.
-  const bx=box[0]*PW/srcW, by=box[1]*viewH/srcH, bw_=(box[2]-box[0])*PW/srcW, bh_=(box[3]-box[1])*viewH/srcH;
-  ctx.setLineDash([]); ctx.strokeStyle='#5db0ff'; ctx.lineWidth=2;
-  ctx.strokeRect(bx,by,bw_,bh_);
-  ctx.strokeStyle='rgba(93,176,255,.55)'; ctx.setLineDash([6,5]);   // equal-thirds guides
-  ctx.beginPath(); ctx.moveTo(bx,by+bh_/3); ctx.lineTo(bx+bw_,by+bh_/3);
-  ctx.moveTo(bx,by+2*bh_/3); ctx.lineTo(bx+bw_,by+2*bh_/3); ctx.stroke();
-  ctx.setLineDash([]); ctx.fillStyle='#5db0ff';                    // corner handles
-  [[bx,by],[bx+bw_,by],[bx,by+bh_],[bx+bw_,by+bh_]].forEach(p=>{ ctx.fillRect(p[0]-5,p[1]-5,10,10); });
+  const sx=PW/srcW, sy=viewH/srcH;          // ORIGINAL px -> preview px (aspect preserved)
+  if(indep && boxes){ PARTS.forEach(p=>drawBox(ctx,boxes[p],COLORS[p],sx,sy,{label:p})); }
+  else { drawBox(ctx,box,'#5db0ff',sx,sy,{thirds:true}); }
 }
 // convert a mouse event to ORIGINAL-pixel coords
 function evToSrc(e){ const r=$('#panel').getBoundingClientRect();
   return [ (e.clientX-r.left)/PW*srcW, (e.clientY-r.top)/viewH*srcH ]; }
-let mode=null, start=null, box0=null;   // mode: 'move' | corner index 0..3
+let mode=null, start=null, box0=null, activePart=null;   // mode: 'move' | corner index 0..3
+// which box (and corner/body) is under the cursor; in indep mode, topmost-drawn wins
+function hitTest(x,y){
+  const tol=12*srcW/PW;
+  const list = (indep&&boxes) ? PARTS.slice().reverse() : [null];
+  for(const p of list){ const b=p?boxes[p]:box;
+    const corners=[[b[0],b[1]],[b[2],b[1]],[b[0],b[3]],[b[2],b[3]]];
+    for(let i=0;i<4;i++) if(Math.abs(x-corners[i][0])<tol&&Math.abs(y-corners[i][1])<tol) return [p,i]; }
+  for(const p of list){ const b=p?boxes[p]:box;
+    if(x>b[0]&&x<b[2]&&y>b[1]&&y<b[3]) return [p,'move']; }
+  return [null,null];
+}
 $('#panel').addEventListener('mousedown',e=>{
-  const [x,y]=evToSrc(e); const tol=12*srcW/PW;
-  const corners=[[box[0],box[1]],[box[2],box[1]],[box[0],box[3]],[box[2],box[3]]];
-  mode=null;
-  corners.forEach((c,i)=>{ if(Math.abs(x-c[0])<tol&&Math.abs(y-c[1])<tol) mode=i; });
-  if(mode===null && x>box[0]&&x<box[2]&&y>box[1]&&y<box[3]) mode='move';
-  if(mode!==null){ start=[x,y]; box0=box.slice(); }
+  const [x,y]=evToSrc(e); const [p,m]=hitTest(x,y);
+  if(m===null){ mode=null; return; }
+  activePart=p; mode=m; start=[x,y]; box0=(p?boxes[p]:box).slice();
 });
 window.addEventListener('mousemove',e=>{ if(mode===null)return;
   const [x,y]=evToSrc(e), dx=x-start[0], dy=y-start[1]; let b=box0.slice();
   if(mode==='move'){ b=[box0[0]+dx,box0[1]+dy,box0[2]+dx,box0[3]+dy]; }
   else { if(mode===0){b[0]+=dx;b[1]+=dy;} if(mode===1){b[2]+=dx;b[1]+=dy;}
          if(mode===2){b[0]+=dx;b[3]+=dy;} if(mode===3){b[2]+=dx;b[3]+=dy;} }
-  box=[Math.round(Math.min(b[0],b[2])),Math.round(Math.min(b[1],b[3])),
-       Math.round(Math.max(b[0],b[2])),Math.round(Math.max(b[1],b[3]))]; drawPanel(); });
+  const nb=[Math.round(Math.min(b[0],b[2])),Math.round(Math.min(b[1],b[3])),
+            Math.round(Math.max(b[0],b[2])),Math.round(Math.max(b[1],b[3]))];
+  if(activePart) boxes[activePart]=nb; else box=nb;
+  drawPanel(); });
 window.addEventListener('mouseup',()=>mode=null);
+
+$('#indepbtn').onclick=()=>{
+  indep=!indep;
+  if(indep && !boxes){                          // seed 3 boxes from the single box's equal thirds
+    const x0=box[0],y0=box[1],x1=box[2],y1=box[3],h=y1-y0;
+    boxes={ top:[x0,y0,x1,Math.round(y0+h/3)],
+            middle:[x0,Math.round(y0+h/3),x1,Math.round(y0+2*h/3)],
+            bottom:[x0,Math.round(y0+2*h/3),x1,y1] };
+  }
+  updateIndepBtn(); drawPanel();
+};
 
 $('#recompute').onclick=async()=>{
   $('#status').textContent='recomputing tiles…';
+  const body = (indep&&boxes) ? {boxes} : {box};
   await fetch('/api/retile/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({box})});
+    body:JSON.stringify(body)});
   $('#status').textContent='tiles updated'; renderTiles();
 };
 function renderTiles(){

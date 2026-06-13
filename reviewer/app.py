@@ -88,21 +88,30 @@ def file(tid: str, kind: str, name: str):
 
 @app.post("/api/retile/{tid}")
 async def retile(tid: str, req: Request):
-    """Body: {box:[x0,y0,x1,y1], out_size?:int}. Recompute the 3 tiles from an adjusted crop box
-    (box is in ORIGINAL source-image pixels)."""
+    """Body is EITHER {box:[x0,y0,x1,y1]} — one crop box sliced into equal thirds — OR
+    {boxes:{top:[...],middle:[...],bottom:[...]}} — three INDEPENDENT crop boxes, one per part,
+    placed anywhere on the page. Optional out_size. All coords in ORIGINAL source-image pixels."""
     import cv2
     import image_ops
     body = await req.json()
-    box = [int(round(float(v))) for v in body["box"]]
     out_size = int(body.get("out_size", 1024))
     d = item_dir(tid)
-    st_path = os.path.join(d, "image", "image_state.json")
+    img_dir = os.path.join(d, "image")
+    st_path = os.path.join(img_dir, "image_state.json")
     st = json.load(open(st_path))
     img = cv2.imread(st["source"], cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(400, "source image unreadable")
-    image_ops.retile(img, box, os.path.join(d, "image"), out_size=out_size)
-    st["box"] = box; st["out_size"] = out_size; st["source_engine"] = "manual"
+    if body.get("boxes"):
+        boxes = {p: [int(round(float(v))) for v in body["boxes"][p]] for p in image_ops.PARTS}
+        image_ops.retile_boxes(img, boxes, img_dir, out_size=out_size)
+        st["boxes"] = boxes; st["out_size"] = out_size; st["source_engine"] = "manual"
+        json.dump(st, open(st_path, "w"), indent=2)
+        return {"ok": True, "boxes": boxes}
+    box = [int(round(float(v))) for v in body["box"]]
+    image_ops.retile(img, box, img_dir, out_size=out_size)
+    # clear any prior per-part boxes so the state reflects single-box (equal-thirds) mode
+    st["box"] = box; st["boxes"] = None; st["out_size"] = out_size; st["source_engine"] = "manual"
     json.dump(st, open(st_path, "w"), indent=2)
     return {"ok": True, "box": box}
 
