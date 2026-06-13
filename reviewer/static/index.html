@@ -83,7 +83,7 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let cur=null, item=null, srcImg=new Image(), box=[0,0,0,0], boxes=null, indep=false, srcW=1, srcH=1;
+let cur=null, item=null, srcImg=new Image(), box=[0,0,0,0], boxes=null, indep=false, srcW=1, srcH=1, wavePeaks=null;
 const PARTS=['top','middle','bottom'], AUD=['beginning','middle','end'];
 const COLORS={top:'#5db0ff', middle:'#42c98a', bottom:'#ffb454'};
 
@@ -107,8 +107,10 @@ async function load(id){
   if(item.image_state){ $('#imgcard').style.display='';
     const ist=item.image_state;
     box=ist.box.slice(); [srcW,srcH]=ist.source_size;
-    boxes = ist.boxes ? {top:ist.boxes.top.slice(), middle:ist.boxes.middle.slice(), bottom:ist.boxes.bottom.slice()} : null;
-    indep = !!boxes; updateIndepBtn();
+    // preference: always start in independent-box mode. Use saved per-part boxes if present,
+    // otherwise seed three from the single box's equal thirds (user can still toggle to single).
+    boxes = ist.boxes ? {top:ist.boxes.top.slice(), middle:ist.boxes.middle.slice(), bottom:ist.boxes.bottom.slice()} : seedBoxes();
+    indep = true; updateIndepBtn();
     $('#boxinfo').textContent=`${ist.kind} · ${ist.source_engine} · conf ${ist.confidence}`
       +(ist.gate_reasons&&ist.gate_reasons.length?(' · '+ist.gate_reasons.join(',')):'')
       +(indep?' · 3-box':'');
@@ -124,6 +126,11 @@ async function load(id){
 
 /* ---------- image: crop box editor over the source photo ---------- */
 const PW=380; let viewH=0, sc=1;   // sc = displayed px per source px
+// three per-part boxes from the single box's equal thirds (starting point for independent mode)
+function seedBoxes(){ const x0=box[0],y0=box[1],x1=box[2],y1=box[3],h=y1-y0;
+  return { top:[x0,y0,x1,Math.round(y0+h/3)],
+           middle:[x0,Math.round(y0+h/3),x1,Math.round(y0+2*h/3)],
+           bottom:[x0,Math.round(y0+2*h/3),x1,y1] }; }
 function updateIndepBtn(){ const b=$('#indepbtn');
   b.textContent='Independent boxes: '+(indep?'on':'off'); b.classList.toggle('on',indep);
   $('#indeplegend').style.display = indep?'':'none'; }
@@ -179,12 +186,7 @@ window.addEventListener('mouseup',()=>mode=null);
 
 $('#indepbtn').onclick=()=>{
   indep=!indep;
-  if(indep && !boxes){                          // seed 3 boxes from the single box's equal thirds
-    const x0=box[0],y0=box[1],x1=box[2],y1=box[3],h=y1-y0;
-    boxes={ top:[x0,y0,x1,Math.round(y0+h/3)],
-            middle:[x0,Math.round(y0+h/3),x1,Math.round(y0+2*h/3)],
-            bottom:[x0,Math.round(y0+2*h/3),x1,y1] };
-  }
+  if(indep && !boxes) boxes=seedBoxes();        // seed 3 boxes from the single box's equal thirds
   updateIndepBtn(); drawPanel();
 };
 
@@ -208,10 +210,26 @@ function renderAudio(){
   const ch=$('#chapters'); ch.innerHTML='';
   (st.chapters||['','','']).forEach((c,i)=>{ const w=document.createElement('div');
     w.innerHTML=`<small>CHAPTER ${i+1}</small><br><textarea>${c||''}</textarea>`; ch.appendChild(w); });
+  // waveform of the full recording (cached server-side); redraw the timeline once it arrives
+  wavePeaks=null; const wid=cur;
+  fetch('/api/waveform/'+cur).then(r=>r.ok?r.json():null).then(d=>{
+    if(d&&cur===wid){ wavePeaks=d.peaks; drawTimeline(); } }).catch(()=>{});
   drawTimeline(); renderPlayers();
+}
+// paint the peak envelope across the full width of the timeline (behind segments/handles)
+function drawWaveform(tl){
+  const w=tl.clientWidth||600, h=tl.clientHeight||60;
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  c.style.cssText='position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none';
+  const ctx=c.getContext('2d'); const n=wavePeaks.length, mid=h/2;
+  ctx.fillStyle='rgba(160,170,185,.55)';
+  for(let i=0;i<n;i++){ const x=i/n*w, bw=Math.max(1,w/n), a=wavePeaks[i]*(h*0.46);
+    ctx.fillRect(x, mid-a, bw, a*2); }
+  tl.appendChild(c);
 }
 function drawTimeline(){
   const st=item.audio_state, T=st.total, tl=$('#audtl'); tl.innerHTML='';
+  if(wavePeaks) drawWaveform(tl);
   const cols=['#5db0ff','#42c98a','#ffb454']; const edges=st.edges; // [e0,e1,e2,e3]
   // dim regions outside the story (before e0 / after e3) so trimmed preamble/chatter is visible
   for(let i=0;i<3;i++){ const s=document.createElement('div'); s.className='seg';
@@ -248,12 +266,18 @@ $('#reprop').onclick=async()=>{ $('#status').textContent='re-detecting…';
   await $('#savechap').onclick(); $('#status').textContent='chapters saved — drag handles or re-run process.py for full re-align'; };
 
 /* ---------- save / next ---------- */
+function gotoNextUnreviewed(){
+  const n=(window._ids||[]).find(o=>!o.reviewed && o.id!==cur)||(window._ids||[]).find(o=>!o.reviewed);
+  if(n) load(n.id); else $('#status').textContent='all stories reviewed ✓';
+}
 $('#save').onclick=async()=>{ await fetch('/api/save/'+cur,{method:'POST'});
-  $('#status').textContent='saved ✓ reviewed'; loadIds(); };
-$('#next').onclick=()=>{ const n=(window._ids||[]).find(o=>!o.reviewed && o.id!==cur)||(window._ids||[]).find(o=>!o.reviewed);
-  if(n) load(n.id); };
+  $('#status').textContent='saved ✓ reviewed'; await loadIds();
+  gotoNextUnreviewed();   // auto-advance to the next unreviewed story
+};
+$('#next').onclick=gotoNextUnreviewed;
 
-loadIds();
+// on open, list stories and jump straight to the first one still left to review
+(async()=>{ await loadIds(); gotoNextUnreviewed(); })();
 </script>
 </body>
 </html>

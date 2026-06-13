@@ -116,6 +116,37 @@ async def retile(tid: str, req: Request):
     return {"ok": True, "box": box}
 
 
+@app.get("/api/waveform/{tid}")
+def waveform(tid: str, buckets: int = 900):
+    """Down-sampled peak envelope of the FULL source recording, so the splitter can show where the
+    audio is loud/quiet. Returns {peaks:[0..1]*N, total:sec}. Cached to audio/waveform.json."""
+    adir = os.path.join(item_dir(tid), "audio")
+    cache = os.path.join(adir, "waveform.json")
+    if os.path.exists(cache):
+        return json.load(open(cache))
+    ast_p = os.path.join(adir, "audio_state.json")
+    if not os.path.exists(ast_p):
+        raise HTTPException(404, "no audio for this id")
+    src = json.load(open(ast_p)).get("source")
+    if not src or not os.path.exists(src):
+        raise HTTPException(404, "source audio missing")
+    try:
+        import numpy as np
+        import librosa
+        y, sr = librosa.load(src, sr=8000, mono=True)
+        n = int(max(1, min(buckets, y.size)))
+        edges = np.linspace(0, y.size, n + 1).astype(int)
+        peaks = [float(np.abs(y[edges[i]:edges[i + 1]]).max()) if edges[i + 1] > edges[i] else 0.0
+                 for i in range(n)]
+        peak = max(peaks) or 1.0
+        out = {"peaks": [round(p / peak, 3) for p in peaks], "total": round(y.size / sr, 3)}
+    except Exception as e:
+        raise HTTPException(500, f"waveform failed: {e}")
+    with open(cache, "w") as fh:
+        json.dump(out, fh)
+    return out
+
+
 @app.post("/api/resplit/{tid}")
 async def resplit(tid: str, req: Request):
     """Body: {edges:[e0,e1,e2,e3]}. Re-cut the 3 audio clips (story start/end + 2 interior cuts)."""
