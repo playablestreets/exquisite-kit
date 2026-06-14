@@ -282,6 +282,8 @@ class ImageState:
     out_size: int = 1024
     boxes: dict | None = None   # optional per-part independent crop boxes {top,middle,bottom},
     #                             set by the reviewer for multi-drawing / non-stacked pages
+    quads: dict | None = None   # optional per-part 4-corner quads (TL,TR,BR,BL) for perspective
+    #                             warp — set by the reviewer for skewed / not-flat pages
 
 
 def _norm_box_to_px(nb: dict, W: int, H: int) -> list[int]:
@@ -324,6 +326,28 @@ def retile_boxes(img_bgr: np.ndarray, boxes: dict, out_dir: str, out_size: int =
         _write_tile(p, sec, out_size)
         written[part] = p
     return {"parts": written, "boxes": boxes}
+
+
+def retile_quads(img_bgr: np.ndarray, quads: dict, out_dir: str, out_size: int = 1024) -> dict:
+    """(Re)generate the 3 tiles by PERSPECTIVE-warping a 4-corner quad per part to a square — for
+    pages photographed at an angle / not scanned flat, so a skewed region still yields an
+    undistorted square tile. `quads` = {"top":[[x,y]*4], "middle":[...], "bottom":[...]}, corners in
+    order TL,TR,BR,BL (original pixels). Returns {parts, quads}."""
+    os.makedirs(out_dir, exist_ok=True)
+    S = int(out_size)
+    dst = np.array([[0, 0], [S - 1, 0], [S - 1, S - 1], [0, S - 1]], dtype=np.float32)
+    written: dict[str, str] = {}
+    for part in PARTS:
+        pts = np.array(quads[part], dtype=np.float32)
+        if pts.shape != (4, 2):
+            raise ValueError(f"{part}: need 4 corner points, got {pts.shape}")
+        M = cv2.getPerspectiveTransform(pts, dst)
+        warp = cv2.warpPerspective(img_bgr, M, (S, S), flags=cv2.INTER_AREA,
+                                   borderMode=cv2.BORDER_REPLICATE)
+        p = os.path.join(out_dir, f"{part}.png")
+        cv2.imwrite(p, cv2.cvtColor(warp, cv2.COLOR_BGR2BGRA))
+        written[part] = p
+    return {"parts": written, "quads": quads}
 
 
 def propose(image_path: str, out_dir: str, use_claude: bool = True,

@@ -52,6 +52,7 @@
       <div class="wrap"><canvas id="panel"></canvas></div>
       <div class="row">
         <button id="indepbtn" class="toolbtn">Independent boxes: off</button>
+        <button id="quadbtn" class="toolbtn" title="Move each corner freely to fix skew; warped to a square">Free corners: off</button>
         <button id="recompute" class="primary">Recompute tiles</button>
         <span class="badge" id="boxinfo"></span>
       </div>
@@ -85,6 +86,7 @@
 <script>
 const $ = s => document.querySelector(s);
 let cur=null, item=null, srcImg=new Image(), box=[0,0,0,0], boxes=null, indep=false, srcW=1, srcH=1, wavePeaks=null;
+let quads=null, quadMode=false, quad0=null;   // free-corner (perspective) mode: 3 quads, each 4 pts [TL,TR,BR,BL]
 const PARTS=['top','middle','bottom'], AUD=['beginning','middle','end'];
 const COLORS={top:'#5db0ff', middle:'#42c98a', bottom:'#ffb454'};
 
@@ -113,9 +115,12 @@ async function load(id){
     // otherwise seed three from the single box's equal thirds (user can still toggle to single).
     boxes = ist.boxes ? {top:ist.boxes.top.slice(), middle:ist.boxes.middle.slice(), bottom:ist.boxes.bottom.slice()} : seedBoxes();
     indep = true; updateIndepBtn();
+    // free-corner (perspective) mode persists per id; off unless this story was saved with quads
+    quads = ist.quads ? {top:ist.quads.top.map(c=>c.slice()), middle:ist.quads.middle.map(c=>c.slice()), bottom:ist.quads.bottom.map(c=>c.slice())} : null;
+    quadMode = !!quads; updateQuadBtn();
     $('#boxinfo').textContent=`${ist.kind} · ${ist.source_engine} · conf ${ist.confidence}`
       +(ist.gate_reasons&&ist.gate_reasons.length?(' · '+ist.gate_reasons.join(',')):'')
-      +(indep?' · 3-box':'');
+      +(quadMode?' · quad':indep?' · 3-box':'');
     srcImg=new Image();
     srcImg.onload=drawPanel;
     srcImg.src='/api/file/'+id+'/image/source.png?'+Date.now();
@@ -136,6 +141,21 @@ function seedBoxes(){ const x0=box[0],y0=box[1],x1=box[2],y1=box[3],h=y1-y0;
 function updateIndepBtn(){ const b=$('#indepbtn');
   b.textContent='Independent boxes: '+(indep?'on':'off'); b.classList.toggle('on',indep);
   $('#indeplegend').style.display = indep?'':'none'; }
+function updateQuadBtn(){ const b=$('#quadbtn');
+  b.textContent='Free corners: '+(quadMode?'on':'off'); b.classList.toggle('on',quadMode); }
+// rect boxes -> quads (corners TL,TR,BR,BL) as the starting point for free-corner mode
+function seedQuads(){ const src=boxes||seedBoxes(); const q={};
+  PARTS.forEach(p=>{ const [x0,y0,x1,y1]=src[p]; q[p]=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]]; }); return q; }
+function bboxOf(pts){ const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+  return [Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)]; }
+// draw a 4-corner quad (pts in ORIGINAL px) with corner handles
+function drawQuad(ctx,pts,col,sx,sy,label){
+  ctx.setLineDash([]); ctx.strokeStyle=col; ctx.lineWidth=2; ctx.beginPath();
+  pts.forEach((p,i)=>{ const X=p[0]*sx,Y=p[1]*sy; i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); });
+  ctx.closePath(); ctx.stroke();
+  ctx.fillStyle=col; pts.forEach(p=>ctx.fillRect(p[0]*sx-5,p[1]*sy-5,10,10));
+  if(label){ ctx.font='bold 12px system-ui'; ctx.fillText(label, pts[0][0]*sx+5, pts[0][1]*sy+15); }
+}
 // draw one rect (box in ORIGINAL px) onto the preview canvas, with corner handles
 function drawBox(ctx,b,col,sx,sy,opts){ opts=opts||{};
   const bx=b[0]*sx, by=b[1]*sy, bw_=(b[2]-b[0])*sx, bh_=(b[3]-b[1])*sy;
@@ -152,7 +172,8 @@ function drawPanel(){
   c.width=PW; c.height=viewH; const ctx=c.getContext('2d');
   ctx.drawImage(srcImg,0,0,PW,viewH);
   const sx=PW/srcW, sy=viewH/srcH;          // ORIGINAL px -> preview px (aspect preserved)
-  if(indep && boxes){ PARTS.forEach(p=>drawBox(ctx,boxes[p],COLORS[p],sx,sy,{label:p})); }
+  if(quadMode && quads){ PARTS.forEach(p=>drawQuad(ctx,quads[p],COLORS[p],sx,sy,p)); }
+  else if(indep && boxes){ PARTS.forEach(p=>drawBox(ctx,boxes[p],COLORS[p],sx,sy,{label:p})); }
   else { drawBox(ctx,box,'#5db0ff',sx,sy,{thirds:true}); }
 }
 // convert a mouse event to ORIGINAL-pixel coords
@@ -162,6 +183,14 @@ let mode=null, start=null, box0=null, activePart=null;   // mode: 'move' | corne
 // which box (and corner/body) is under the cursor; in indep mode, topmost-drawn wins
 function hitTest(x,y){
   const tol=12*srcW/PW;
+  if(quadMode && quads){                              // free-corner mode: per-part 4 corners / move
+    const list=PARTS.slice().reverse();
+    for(const p of list){ const q=quads[p];
+      for(let i=0;i<4;i++) if(Math.abs(x-q[i][0])<tol&&Math.abs(y-q[i][1])<tol) return [p,i]; }
+    for(const p of list){ const bb=bboxOf(quads[p]);
+      if(x>bb[0]&&x<bb[2]&&y>bb[1]&&y<bb[3]) return [p,'move']; }
+    return [null,null];
+  }
   const list = (indep&&boxes) ? PARTS.slice().reverse() : [null];
   for(const p of list){ const b=p?boxes[p]:box;
     const corners=[[b[0],b[1]],[b[2],b[1]],[b[0],b[3]],[b[2],b[3]]];
@@ -173,10 +202,19 @@ function hitTest(x,y){
 $('#panel').addEventListener('mousedown',e=>{
   const [x,y]=evToSrc(e); const [p,m]=hitTest(x,y);
   if(m===null){ mode=null; return; }
-  activePart=p; mode=m; start=[x,y]; box0=(p?boxes[p]:box).slice();
+  activePart=p; mode=m; start=[x,y];
+  if(quadMode && quads){ quad0=quads[p].map(c=>c.slice()); }
+  else { box0=(p?boxes[p]:box).slice(); }
 });
 window.addEventListener('mousemove',e=>{ if(mode===null)return;
-  const [x,y]=evToSrc(e), dx=x-start[0], dy=y-start[1]; let b=box0.slice();
+  const [x,y]=evToSrc(e), dx=x-start[0], dy=y-start[1];
+  if(quadMode && quads){                              // move whole quad or a single corner, freely
+    const q=quad0.map(c=>c.slice());
+    if(mode==='move'){ q.forEach(c=>{ c[0]+=dx; c[1]+=dy; }); }
+    else { q[mode][0]+=dx; q[mode][1]+=dy; }
+    quads[activePart]=q.map(c=>[Math.round(c[0]),Math.round(c[1])]); drawPanel(); return;
+  }
+  let b=box0.slice();
   if(mode==='move'){ b=[box0[0]+dx,box0[1]+dy,box0[2]+dx,box0[3]+dy]; }
   else { if(mode===0){b[0]+=dx;b[1]+=dy;} if(mode===1){b[2]+=dx;b[1]+=dy;}
          if(mode===2){b[0]+=dx;b[3]+=dy;} if(mode===3){b[2]+=dx;b[3]+=dy;} }
@@ -189,12 +227,19 @@ window.addEventListener('mouseup',()=>mode=null);
 $('#indepbtn').onclick=()=>{
   indep=!indep;
   if(indep && !boxes) boxes=seedBoxes();        // seed 3 boxes from the single box's equal thirds
+  if(!indep && quadMode){ quadMode=false; updateQuadBtn(); }   // free-corners implies independent
   updateIndepBtn(); drawPanel();
+};
+$('#quadbtn').onclick=()=>{
+  quadMode=!quadMode;
+  if(quadMode){ if(!indep){ indep=true; if(!boxes) boxes=seedBoxes(); updateIndepBtn(); }
+                if(!quads) quads=seedQuads(); }
+  updateQuadBtn(); drawPanel();
 };
 
 $('#recompute').onclick=async()=>{
   $('#status').textContent='recomputing tiles…';
-  const body = (indep&&boxes) ? {boxes} : {box};
+  const body = (quadMode&&quads) ? {quads} : (indep&&boxes) ? {boxes} : {box};
   await fetch('/api/retile/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)});
   $('#status').textContent='tiles updated'; renderTiles();

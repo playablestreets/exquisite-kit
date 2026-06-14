@@ -103,16 +103,24 @@ async def retile(tid: str, req: Request):
     img = cv2.imread(st["source"], cv2.IMREAD_COLOR)
     if img is None:
         raise HTTPException(400, "source image unreadable")
+    if body.get("quads"):
+        quads = {p: [[int(round(float(c[0]))), int(round(float(c[1])))] for c in body["quads"][p]]
+                 for p in image_ops.PARTS}
+        image_ops.retile_quads(img, quads, img_dir, out_size=out_size)
+        st["quads"] = quads; st["out_size"] = out_size; st["source_engine"] = "manual"
+        json.dump(st, open(st_path, "w"), indent=2)
+        return {"ok": True, "quads": quads}
     if body.get("boxes"):
         boxes = {p: [int(round(float(v))) for v in body["boxes"][p]] for p in image_ops.PARTS}
         image_ops.retile_boxes(img, boxes, img_dir, out_size=out_size)
-        st["boxes"] = boxes; st["out_size"] = out_size; st["source_engine"] = "manual"
+        st["boxes"] = boxes; st["quads"] = None; st["out_size"] = out_size; st["source_engine"] = "manual"
         json.dump(st, open(st_path, "w"), indent=2)
         return {"ok": True, "boxes": boxes}
     box = [int(round(float(v))) for v in body["box"]]
     image_ops.retile(img, box, img_dir, out_size=out_size)
-    # clear any prior per-part boxes so the state reflects single-box (equal-thirds) mode
-    st["box"] = box; st["boxes"] = None; st["out_size"] = out_size; st["source_engine"] = "manual"
+    # clear any prior per-part boxes/quads so the state reflects single-box (equal-thirds) mode
+    st["box"] = box; st["boxes"] = None; st["quads"] = None
+    st["out_size"] = out_size; st["source_engine"] = "manual"
     json.dump(st, open(st_path, "w"), indent=2)
     return {"ok": True, "box": box}
 
