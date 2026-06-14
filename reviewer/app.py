@@ -57,6 +57,7 @@ def ids():
         if os.path.exists(sp):
             s = json.load(open(sp))
             out.append({"id": tid, "reviewed": s.get("reviewed", False),
+                        "archived": s.get("archived", False),
                         "unpaired": s.get("unpaired", False),
                         "has_image": bool(s.get("image")), "has_audio": bool(s.get("audio"))})
     return out
@@ -177,5 +178,17 @@ async def chapters(tid: str, req: Request):
 def save(tid: str):
     status = load_status(tid)
     status["reviewed"] = True
+    status["archived"] = False          # reviewing un-archives
+    save_status(tid, status)
+    return {"ok": True}
+
+
+@app.post("/api/archive/{tid}")
+def archive(tid: str):
+    """Mark a story as archived: it can't be processed, so it's excluded from export and from the
+    'next unreviewed' queue (but kept in WORK so the decision is visible/reversible)."""
+    status = load_status(tid)
+    status["archived"] = True
+    status["reviewed"] = False          # archived is a distinct state from reviewed
     save_status(tid, status)
     return {"ok": True}

@@ -77,6 +77,7 @@
   </div>
   <div class="row" style="margin-top:18px">
     <button id="save" class="go">✓ Save &amp; mark reviewed</button>
+    <button id="archive" title="Can't be processed — exclude from export">🗄 Archive (can't process)</button>
     <button id="next">Next unreviewed →</button>
   </div>
 </main>
@@ -92,8 +93,9 @@ async function loadIds(){
   const box=$('#idlist'); box.innerHTML='';
   ids.forEach(o=>{
     const d=document.createElement('div'); d.className='idrow'+(o.id===cur?' active':'');
+    const mark = o.reviewed?'✓':(o.archived?'🗄':'');
     d.innerHTML=`<span>${o.id}</span><span class="badge ${o.reviewed?'r':''}">`
-      +`${o.reviewed?'✓':''}${o.unpaired?' ⚠':''}</span>`;
+      +`${mark}${o.unpaired?' ⚠':''}</span>`;
     d.onclick=()=>load(o.id); box.appendChild(d);
   });
   window._ids=ids;
@@ -266,13 +268,18 @@ $('#reprop').onclick=async()=>{ $('#status').textContent='re-detecting…';
   await $('#savechap').onclick(); $('#status').textContent='chapters saved — drag handles or re-run process.py for full re-align'; };
 
 /* ---------- save / next ---------- */
-function gotoNextUnreviewed(){
-  const n=(window._ids||[]).find(o=>!o.reviewed && o.id!==cur)||(window._ids||[]).find(o=>!o.reviewed);
-  if(n) load(n.id); else $('#status').textContent='all stories reviewed ✓';
+function gotoNextUnreviewed(){   // "left to do" = neither reviewed nor archived
+  const todo=o=>!o.reviewed && !o.archived;
+  const n=(window._ids||[]).find(o=>todo(o)&&o.id!==cur)||(window._ids||[]).find(todo);
+  if(n) load(n.id); else $('#status').textContent='nothing left — all stories reviewed or archived ✓';
 }
 $('#save').onclick=async()=>{ await fetch('/api/save/'+cur,{method:'POST'});
   $('#status').textContent='saved ✓ reviewed'; await loadIds();
-  gotoNextUnreviewed();   // auto-advance to the next unreviewed story
+  gotoNextUnreviewed();   // auto-advance to the next story left to do
+};
+$('#archive').onclick=async()=>{ await fetch('/api/archive/'+cur,{method:'POST'});
+  $('#status').textContent='archived 🗄 (won’t be exported)'; await loadIds();
+  gotoNextUnreviewed();   // auto-advance, skipping archived
 };
 $('#next').onclick=gotoNextUnreviewed;
 

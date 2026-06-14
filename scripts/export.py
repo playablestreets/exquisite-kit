@@ -84,7 +84,11 @@ def main() -> int:
         status_p = os.path.join(args.work, tid, "status.json")
         if not os.path.exists(status_p):
             continue
-        reviewed = json.load(open(status_p)).get("reviewed", False)
+        st = json.load(open(status_p))
+        if st.get("archived"):              # can't be processed — never export
+            skipped += 1
+            continue
+        reviewed = st.get("reviewed", False)
         if not reviewed and not args.include_unreviewed:
             skipped += 1
             continue
