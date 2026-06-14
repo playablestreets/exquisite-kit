@@ -65,7 +65,7 @@
     </section>
     <!-- AUDIO -->
     <section class="card" id="audcard">
-      <h3>Audio — drag the 4 edges (orange = story start/end, blue/green = chapter cuts), then re-split</h3>
+      <h3>Audio — drag the 6 handles: start &amp; end of each clip (🔵 beginning · 🟢 middle · 🟠 end); gaps between them are dropped, then re-split</h3>
       <div class="chap" id="chapters"></div>
       <div class="row"><button id="savechap">Save chapter texts</button>
         <button id="reprop">Re-detect cuts from chapters</button></div>
@@ -209,6 +209,8 @@ function renderTiles(){
 /* ---------- audio ---------- */
 function renderAudio(){
   const st=item.audio_state; $('#audmethod').textContent='detected: '+st.method;
+  // 6 independent boundaries (start/end per clip). Seed from the 4 contiguous edges if not set yet.
+  if(!Array.isArray(st.spans)||st.spans.length!==6){ const e=st.edges; st.spans=[e[0],e[1],e[1],e[2],e[2],e[3]]; }
   const ch=$('#chapters'); ch.innerHTML='';
   (st.chapters||['','','']).forEach((c,i)=>{ const w=document.createElement('div');
     w.innerHTML=`<small>CHAPTER ${i+1}</small><br><textarea>${c||''}</textarea>`; ch.appendChild(w); });
@@ -232,19 +234,25 @@ function drawWaveform(tl){
 function drawTimeline(){
   const st=item.audio_state, T=st.total, tl=$('#audtl'); tl.innerHTML='';
   if(wavePeaks) drawWaveform(tl);
-  const cols=['#5db0ff','#42c98a','#ffb454']; const edges=st.edges; // [e0,e1,e2,e3]
-  // dim regions outside the story (before e0 / after e3) so trimmed preamble/chatter is visible
-  for(let i=0;i<3;i++){ const s=document.createElement('div'); s.className='seg';
-    s.style.left=(edges[i]/T*100)+'%'; s.style.width=((edges[i+1]-edges[i])/T*100)+'%';
-    s.style.background=cols[i]; tl.appendChild(s);
-    const lab=document.createElement('div'); lab.className='seglabel'; lab.style.left=(edges[i]/T*100+1)+'%';
-    lab.textContent=AUD[i]; tl.appendChild(lab); }
-  const tips=['story start','ch1→ch2','ch2→ch3','story end'];
-  edges.forEach((b,i)=>{ const h=document.createElement('div'); h.className='handle'; h.title=tips[i];
-    h.style.left=(b/T*100)+'%'; if(i===0||i===3) h.style.background='#ffb454';
-    h.onmousedown=ev=>{ ev.preventDefault(); const move=e=>{ const r=tl.getBoundingClientRect();
-        let t=Math.min(T,Math.max(0,(e.clientX-r.left)/r.width*T)); st.edges[i]=+t.toFixed(2);
-        st.edges.sort((a,b)=>a-b); drawTimeline(); };
+  const S=st.spans;                              // [b0,b1, m0,m1, e0,e1] — start/end per clip
+  const cols=['#5db0ff','#42c98a','#ffb454'];    // beginning / middle / end
+  // one coloured band per clip; the gaps between bands are dropped silence
+  for(let i=0;i<3;i++){ const s0=S[2*i], s1=S[2*i+1];
+    const seg=document.createElement('div'); seg.className='seg';
+    seg.style.left=(s0/T*100)+'%'; seg.style.width=(Math.max(0,s1-s0)/T*100)+'%';
+    seg.style.background=cols[i]; tl.appendChild(seg);
+    const lab=document.createElement('div'); lab.className='seglabel';
+    lab.style.left=(s0/T*100+0.5)+'%'; lab.textContent=AUD[i]; tl.appendChild(lab); }
+  // six handles: start & end of each clip, colour-matched to its band
+  const hcols=[cols[0],cols[0],cols[1],cols[1],cols[2],cols[2]];
+  const tips=['beginning start','beginning end','middle start','middle end','end start','end end'];
+  S.forEach((v,i)=>{ const h=document.createElement('div'); h.className='handle'; h.title=tips[i];
+    h.style.left=(v/T*100)+'%'; h.style.background=hcols[i];
+    h.onmousedown=ev=>{ ev.preventDefault();
+      const move=e=>{ const r=tl.getBoundingClientRect();
+        const lo=i>0?S[i-1]:0, hi=i<5?S[i+1]:T;   // clamp between neighbours: keeps order, allows gaps
+        let t=Math.min(hi,Math.max(lo,(e.clientX-r.left)/r.width*T));
+        S[i]=+t.toFixed(2); drawTimeline(); };
       const up=()=>{document.removeEventListener('mousemove',move);document.removeEventListener('mouseup',up);};
       document.addEventListener('mousemove',move); document.addEventListener('mouseup',up); };
     tl.appendChild(h); });
@@ -257,7 +265,7 @@ function renderPlayers(){
 }
 $('#resplit').onclick=async()=>{ $('#status').textContent='re-splitting…';
   await fetch('/api/resplit/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({edges:item.audio_state.edges})});
+    body:JSON.stringify({spans:item.audio_state.spans})});
   $('#status').textContent='audio updated'; renderPlayers(); };
 $('#savechap').onclick=async()=>{ const texts=[...$('#chapters').querySelectorAll('textarea')].map(t=>t.value);
   await fetch('/api/chapters/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},

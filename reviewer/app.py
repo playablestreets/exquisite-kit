@@ -150,14 +150,23 @@ def waveform(tid: str, buckets: int = 900):
 
 @app.post("/api/resplit/{tid}")
 async def resplit(tid: str, req: Request):
-    """Body: {edges:[e0,e1,e2,e3]}. Re-cut the 3 audio clips (story start/end + 2 interior cuts)."""
+    """Body is EITHER {spans:[b0,b1,m0,m1,e0,e1]} — three INDEPENDENT start/end pairs, so silence
+    between sections is dropped — OR legacy {edges:[e0,e1,e2,e3]} (contiguous cuts). Re-cuts the 3
+    clips. All values are seconds into the source recording."""
     import audio_ops
     body = await req.json()
-    edges = sorted(float(x) for x in body["edges"])
     d = item_dir(tid)
     ast_p = os.path.join(d, "audio", "audio_state.json")
     ast = json.load(open(ast_p))
-    audio_ops.split_and_trim(ast["source"], edges, os.path.join(d, "audio"))
+    out = os.path.join(d, "audio")
+    if body.get("spans"):
+        spans = [float(x) for x in body["spans"]]
+        audio_ops.split_spans(ast["source"], spans, out)
+        ast["spans"] = spans; ast["method"] = "manual"
+        json.dump(ast, open(ast_p, "w"), indent=2)
+        return {"ok": True, "spans": spans}
+    edges = sorted(float(x) for x in body["edges"])
+    audio_ops.split_and_trim(ast["source"], edges, out)
     ast["edges"] = edges; ast["method"] = "manual"
     json.dump(ast, open(ast_p, "w"), indent=2)
     return {"ok": True, "edges": edges}
