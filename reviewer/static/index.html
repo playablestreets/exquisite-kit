@@ -48,17 +48,25 @@
   <div class="cols">
     <!-- IMAGE -->
     <section class="card" id="imgcard">
-      <h3>Image — drag the box to move, drag a corner to resize, then recompute</h3>
+      <h3>Image — drag a box to move, drag a corner to resize, then recompute</h3>
       <div class="wrap"><canvas id="panel"></canvas></div>
       <div class="row">
+        <button id="indepbtn" class="toolbtn">Independent boxes: off</button>
+        <button id="quadbtn" class="toolbtn" title="Move each corner freely to fix skew; warped to a square">Free corners: off</button>
         <button id="recompute" class="primary">Recompute tiles</button>
         <span class="badge" id="boxinfo"></span>
+      </div>
+      <div class="row" id="indeplegend" style="display:none">
+        <span class="badge"><span style="color:#5db0ff">■</span> top/head</span>
+        <span class="badge"><span style="color:#42c98a">■</span> middle/torso</span>
+        <span class="badge"><span style="color:#ffb454">■</span> bottom/legs</span>
+        <span class="badge">— each box crops anywhere on the page, independently.</span>
       </div>
       <div class="tiles" id="tiles"></div>
     </section>
     <!-- AUDIO -->
     <section class="card" id="audcard">
-      <h3>Audio — drag the 4 edges (orange = story start/end, blue/green = chapter cuts), then re-split</h3>
+      <h3>Audio — drag the 6 handles: start &amp; end of each clip (🔵 beginning · 🟢 middle · 🟠 end); gaps between them are dropped, then re-split</h3>
       <div class="chap" id="chapters"></div>
       <div class="row"><button id="savechap">Save chapter texts</button>
         <button id="reprop">Re-detect cuts from chapters</button></div>
@@ -70,22 +78,26 @@
   </div>
   <div class="row" style="margin-top:18px">
     <button id="save" class="go">✓ Save &amp; mark reviewed</button>
+    <button id="archive" title="Can't be processed — exclude from export">🗄 Archive (can't process)</button>
     <button id="next">Next unreviewed →</button>
   </div>
 </main>
 
 <script>
 const $ = s => document.querySelector(s);
-let cur=null, item=null, srcImg=new Image(), box=[0,0,0,0], srcW=1, srcH=1;
+let cur=null, item=null, srcImg=new Image(), box=[0,0,0,0], boxes=null, indep=false, srcW=1, srcH=1, wavePeaks=null;
+let quads=null, quadMode=false, quad0=null;   // free-corner (perspective) mode: 3 quads, each 4 pts [TL,TR,BR,BL]
 const PARTS=['top','middle','bottom'], AUD=['beginning','middle','end'];
+const COLORS={top:'#5db0ff', middle:'#42c98a', bottom:'#ffb454'};
 
 async function loadIds(){
   const ids = await (await fetch('/api/ids')).json();
   const box=$('#idlist'); box.innerHTML='';
   ids.forEach(o=>{
     const d=document.createElement('div'); d.className='idrow'+(o.id===cur?' active':'');
+    const mark = o.reviewed?'✓':(o.archived?'🗄':'');
     d.innerHTML=`<span>${o.id}</span><span class="badge ${o.reviewed?'r':''}">`
-      +`${o.reviewed?'✓':''}${o.unpaired?' ⚠':''}</span>`;
+      +`${mark}${o.unpaired?' ⚠':''}</span>`;
     d.onclick=()=>load(o.id); box.appendChild(d);
   });
   window._ids=ids;
@@ -99,8 +111,16 @@ async function load(id){
   if(item.image_state){ $('#imgcard').style.display='';
     const ist=item.image_state;
     box=ist.box.slice(); [srcW,srcH]=ist.source_size;
+    // preference: always start in independent-box mode. Use saved per-part boxes if present,
+    // otherwise seed three from the single box's equal thirds (user can still toggle to single).
+    boxes = ist.boxes ? {top:ist.boxes.top.slice(), middle:ist.boxes.middle.slice(), bottom:ist.boxes.bottom.slice()} : seedBoxes();
+    indep = true; updateIndepBtn();
+    // free-corner (perspective) mode persists per id; off unless this story was saved with quads
+    quads = ist.quads ? {top:ist.quads.top.map(c=>c.slice()), middle:ist.quads.middle.map(c=>c.slice()), bottom:ist.quads.bottom.map(c=>c.slice())} : null;
+    quadMode = !!quads; updateQuadBtn();
     $('#boxinfo').textContent=`${ist.kind} · ${ist.source_engine} · conf ${ist.confidence}`
-      +(ist.gate_reasons&&ist.gate_reasons.length?(' · '+ist.gate_reasons.join(',')):'');
+      +(ist.gate_reasons&&ist.gate_reasons.length?(' · '+ist.gate_reasons.join(',')):'')
+      +(quadMode?' · quad':indep?' · 3-box':'');
     srcImg=new Image();
     srcImg.onload=drawPanel;
     srcImg.src='/api/file/'+id+'/image/source.png?'+Date.now();
@@ -113,45 +133,115 @@ async function load(id){
 
 /* ---------- image: crop box editor over the source photo ---------- */
 const PW=380; let viewH=0, sc=1;   // sc = displayed px per source px
+// three per-part boxes from the single box's equal thirds (starting point for independent mode)
+function seedBoxes(){ const x0=box[0],y0=box[1],x1=box[2],y1=box[3],h=y1-y0;
+  return { top:[x0,y0,x1,Math.round(y0+h/3)],
+           middle:[x0,Math.round(y0+h/3),x1,Math.round(y0+2*h/3)],
+           bottom:[x0,Math.round(y0+2*h/3),x1,y1] }; }
+function updateIndepBtn(){ const b=$('#indepbtn');
+  b.textContent='Independent boxes: '+(indep?'on':'off'); b.classList.toggle('on',indep);
+  $('#indeplegend').style.display = indep?'':'none'; }
+function updateQuadBtn(){ const b=$('#quadbtn');
+  b.textContent='Free corners: '+(quadMode?'on':'off'); b.classList.toggle('on',quadMode); }
+// rect boxes -> quads (corners TL,TR,BR,BL) as the starting point for free-corner mode
+function seedQuads(){ const src=boxes||seedBoxes(); const q={};
+  PARTS.forEach(p=>{ const [x0,y0,x1,y1]=src[p]; q[p]=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]]; }); return q; }
+function bboxOf(pts){ const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+  return [Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)]; }
+// draw a 4-corner quad (pts in ORIGINAL px) with corner handles
+function drawQuad(ctx,pts,col,sx,sy,label){
+  ctx.setLineDash([]); ctx.strokeStyle=col; ctx.lineWidth=2; ctx.beginPath();
+  pts.forEach((p,i)=>{ const X=p[0]*sx,Y=p[1]*sy; i?ctx.lineTo(X,Y):ctx.moveTo(X,Y); });
+  ctx.closePath(); ctx.stroke();
+  ctx.fillStyle=col; pts.forEach(p=>ctx.fillRect(p[0]*sx-5,p[1]*sy-5,10,10));
+  if(label){ ctx.font='bold 12px system-ui'; ctx.fillText(label, pts[0][0]*sx+5, pts[0][1]*sy+15); }
+}
+// draw one rect (box in ORIGINAL px) onto the preview canvas, with corner handles
+function drawBox(ctx,b,col,sx,sy,opts){ opts=opts||{};
+  const bx=b[0]*sx, by=b[1]*sy, bw_=(b[2]-b[0])*sx, bh_=(b[3]-b[1])*sy;
+  ctx.setLineDash([]); ctx.strokeStyle=col; ctx.lineWidth=2; ctx.strokeRect(bx,by,bw_,bh_);
+  if(opts.thirds){ ctx.strokeStyle='rgba(93,176,255,.55)'; ctx.setLineDash([6,5]);
+    ctx.beginPath(); ctx.moveTo(bx,by+bh_/3); ctx.lineTo(bx+bw_,by+bh_/3);
+    ctx.moveTo(bx,by+2*bh_/3); ctx.lineTo(bx+bw_,by+2*bh_/3); ctx.stroke(); ctx.setLineDash([]); }
+  ctx.fillStyle=col;
+  [[bx,by],[bx+bw_,by],[bx,by+bh_],[bx+bw_,by+bh_]].forEach(p=>ctx.fillRect(p[0]-5,p[1]-5,10,10));
+  if(opts.label){ ctx.font='bold 12px system-ui'; ctx.fillText(opts.label, bx+5, by+15); }
+}
 function drawPanel(){
   const c=$('#panel'); sc=PW/srcImg.width; viewH=srcImg.height*sc;
   c.width=PW; c.height=viewH; const ctx=c.getContext('2d');
   ctx.drawImage(srcImg,0,0,PW,viewH);
-  // box scaled into the (downscaled) source preview. box is in ORIGINAL pixels.
-  const bx=box[0]*PW/srcW, by=box[1]*viewH/srcH, bw_=(box[2]-box[0])*PW/srcW, bh_=(box[3]-box[1])*viewH/srcH;
-  ctx.setLineDash([]); ctx.strokeStyle='#5db0ff'; ctx.lineWidth=2;
-  ctx.strokeRect(bx,by,bw_,bh_);
-  ctx.strokeStyle='rgba(93,176,255,.55)'; ctx.setLineDash([6,5]);   // equal-thirds guides
-  ctx.beginPath(); ctx.moveTo(bx,by+bh_/3); ctx.lineTo(bx+bw_,by+bh_/3);
-  ctx.moveTo(bx,by+2*bh_/3); ctx.lineTo(bx+bw_,by+2*bh_/3); ctx.stroke();
-  ctx.setLineDash([]); ctx.fillStyle='#5db0ff';                    // corner handles
-  [[bx,by],[bx+bw_,by],[bx,by+bh_],[bx+bw_,by+bh_]].forEach(p=>{ ctx.fillRect(p[0]-5,p[1]-5,10,10); });
+  const sx=PW/srcW, sy=viewH/srcH;          // ORIGINAL px -> preview px (aspect preserved)
+  if(quadMode && quads){ PARTS.forEach(p=>drawQuad(ctx,quads[p],COLORS[p],sx,sy,p)); }
+  else if(indep && boxes){ PARTS.forEach(p=>drawBox(ctx,boxes[p],COLORS[p],sx,sy,{label:p})); }
+  else { drawBox(ctx,box,'#5db0ff',sx,sy,{thirds:true}); }
 }
 // convert a mouse event to ORIGINAL-pixel coords
 function evToSrc(e){ const r=$('#panel').getBoundingClientRect();
   return [ (e.clientX-r.left)/PW*srcW, (e.clientY-r.top)/viewH*srcH ]; }
-let mode=null, start=null, box0=null;   // mode: 'move' | corner index 0..3
+let mode=null, start=null, box0=null, activePart=null;   // mode: 'move' | corner index 0..3
+// which box (and corner/body) is under the cursor; in indep mode, topmost-drawn wins
+function hitTest(x,y){
+  const tol=12*srcW/PW;
+  if(quadMode && quads){                              // free-corner mode: per-part 4 corners / move
+    const list=PARTS.slice().reverse();
+    for(const p of list){ const q=quads[p];
+      for(let i=0;i<4;i++) if(Math.abs(x-q[i][0])<tol&&Math.abs(y-q[i][1])<tol) return [p,i]; }
+    for(const p of list){ const bb=bboxOf(quads[p]);
+      if(x>bb[0]&&x<bb[2]&&y>bb[1]&&y<bb[3]) return [p,'move']; }
+    return [null,null];
+  }
+  const list = (indep&&boxes) ? PARTS.slice().reverse() : [null];
+  for(const p of list){ const b=p?boxes[p]:box;
+    const corners=[[b[0],b[1]],[b[2],b[1]],[b[0],b[3]],[b[2],b[3]]];
+    for(let i=0;i<4;i++) if(Math.abs(x-corners[i][0])<tol&&Math.abs(y-corners[i][1])<tol) return [p,i]; }
+  for(const p of list){ const b=p?boxes[p]:box;
+    if(x>b[0]&&x<b[2]&&y>b[1]&&y<b[3]) return [p,'move']; }
+  return [null,null];
+}
 $('#panel').addEventListener('mousedown',e=>{
-  const [x,y]=evToSrc(e); const tol=12*srcW/PW;
-  const corners=[[box[0],box[1]],[box[2],box[1]],[box[0],box[3]],[box[2],box[3]]];
-  mode=null;
-  corners.forEach((c,i)=>{ if(Math.abs(x-c[0])<tol&&Math.abs(y-c[1])<tol) mode=i; });
-  if(mode===null && x>box[0]&&x<box[2]&&y>box[1]&&y<box[3]) mode='move';
-  if(mode!==null){ start=[x,y]; box0=box.slice(); }
+  const [x,y]=evToSrc(e); const [p,m]=hitTest(x,y);
+  if(m===null){ mode=null; return; }
+  activePart=p; mode=m; start=[x,y];
+  if(quadMode && quads){ quad0=quads[p].map(c=>c.slice()); }
+  else { box0=(p?boxes[p]:box).slice(); }
 });
 window.addEventListener('mousemove',e=>{ if(mode===null)return;
-  const [x,y]=evToSrc(e), dx=x-start[0], dy=y-start[1]; let b=box0.slice();
+  const [x,y]=evToSrc(e), dx=x-start[0], dy=y-start[1];
+  if(quadMode && quads){                              // move whole quad or a single corner, freely
+    const q=quad0.map(c=>c.slice());
+    if(mode==='move'){ q.forEach(c=>{ c[0]+=dx; c[1]+=dy; }); }
+    else { q[mode][0]+=dx; q[mode][1]+=dy; }
+    quads[activePart]=q.map(c=>[Math.round(c[0]),Math.round(c[1])]); drawPanel(); return;
+  }
+  let b=box0.slice();
   if(mode==='move'){ b=[box0[0]+dx,box0[1]+dy,box0[2]+dx,box0[3]+dy]; }
   else { if(mode===0){b[0]+=dx;b[1]+=dy;} if(mode===1){b[2]+=dx;b[1]+=dy;}
          if(mode===2){b[0]+=dx;b[3]+=dy;} if(mode===3){b[2]+=dx;b[3]+=dy;} }
-  box=[Math.round(Math.min(b[0],b[2])),Math.round(Math.min(b[1],b[3])),
-       Math.round(Math.max(b[0],b[2])),Math.round(Math.max(b[1],b[3]))]; drawPanel(); });
+  const nb=[Math.round(Math.min(b[0],b[2])),Math.round(Math.min(b[1],b[3])),
+            Math.round(Math.max(b[0],b[2])),Math.round(Math.max(b[1],b[3]))];
+  if(activePart) boxes[activePart]=nb; else box=nb;
+  drawPanel(); });
 window.addEventListener('mouseup',()=>mode=null);
+
+$('#indepbtn').onclick=()=>{
+  indep=!indep;
+  if(indep && !boxes) boxes=seedBoxes();        // seed 3 boxes from the single box's equal thirds
+  if(!indep && quadMode){ quadMode=false; updateQuadBtn(); }   // free-corners implies independent
+  updateIndepBtn(); drawPanel();
+};
+$('#quadbtn').onclick=()=>{
+  quadMode=!quadMode;
+  if(quadMode){ if(!indep){ indep=true; if(!boxes) boxes=seedBoxes(); updateIndepBtn(); }
+                if(!quads) quads=seedQuads(); }
+  updateQuadBtn(); drawPanel();
+};
 
 $('#recompute').onclick=async()=>{
   $('#status').textContent='recomputing tiles…';
+  const body = (quadMode&&quads) ? {quads} : (indep&&boxes) ? {boxes} : {box};
   await fetch('/api/retile/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({box})});
+    body:JSON.stringify(body)});
   $('#status').textContent='tiles updated'; renderTiles();
 };
 function renderTiles(){
@@ -164,26 +254,50 @@ function renderTiles(){
 /* ---------- audio ---------- */
 function renderAudio(){
   const st=item.audio_state; $('#audmethod').textContent='detected: '+st.method;
+  // 6 independent boundaries (start/end per clip). Seed from the 4 contiguous edges if not set yet.
+  if(!Array.isArray(st.spans)||st.spans.length!==6){ const e=st.edges; st.spans=[e[0],e[1],e[1],e[2],e[2],e[3]]; }
   const ch=$('#chapters'); ch.innerHTML='';
   (st.chapters||['','','']).forEach((c,i)=>{ const w=document.createElement('div');
     w.innerHTML=`<small>CHAPTER ${i+1}</small><br><textarea>${c||''}</textarea>`; ch.appendChild(w); });
+  // waveform of the full recording (cached server-side); redraw the timeline once it arrives
+  wavePeaks=null; const wid=cur;
+  fetch('/api/waveform/'+cur).then(r=>r.ok?r.json():null).then(d=>{
+    if(d&&cur===wid){ wavePeaks=d.peaks; drawTimeline(); } }).catch(()=>{});
   drawTimeline(); renderPlayers();
+}
+// paint the peak envelope across the full width of the timeline (behind segments/handles)
+function drawWaveform(tl){
+  const w=tl.clientWidth||600, h=tl.clientHeight||60;
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  c.style.cssText='position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none';
+  const ctx=c.getContext('2d'); const n=wavePeaks.length, mid=h/2;
+  ctx.fillStyle='rgba(160,170,185,.55)';
+  for(let i=0;i<n;i++){ const x=i/n*w, bw=Math.max(1,w/n), a=wavePeaks[i]*(h*0.46);
+    ctx.fillRect(x, mid-a, bw, a*2); }
+  tl.appendChild(c);
 }
 function drawTimeline(){
   const st=item.audio_state, T=st.total, tl=$('#audtl'); tl.innerHTML='';
-  const cols=['#5db0ff','#42c98a','#ffb454']; const edges=st.edges; // [e0,e1,e2,e3]
-  // dim regions outside the story (before e0 / after e3) so trimmed preamble/chatter is visible
-  for(let i=0;i<3;i++){ const s=document.createElement('div'); s.className='seg';
-    s.style.left=(edges[i]/T*100)+'%'; s.style.width=((edges[i+1]-edges[i])/T*100)+'%';
-    s.style.background=cols[i]; tl.appendChild(s);
-    const lab=document.createElement('div'); lab.className='seglabel'; lab.style.left=(edges[i]/T*100+1)+'%';
-    lab.textContent=AUD[i]; tl.appendChild(lab); }
-  const tips=['story start','ch1→ch2','ch2→ch3','story end'];
-  edges.forEach((b,i)=>{ const h=document.createElement('div'); h.className='handle'; h.title=tips[i];
-    h.style.left=(b/T*100)+'%'; if(i===0||i===3) h.style.background='#ffb454';
-    h.onmousedown=ev=>{ ev.preventDefault(); const move=e=>{ const r=tl.getBoundingClientRect();
-        let t=Math.min(T,Math.max(0,(e.clientX-r.left)/r.width*T)); st.edges[i]=+t.toFixed(2);
-        st.edges.sort((a,b)=>a-b); drawTimeline(); };
+  if(wavePeaks) drawWaveform(tl);
+  const S=st.spans;                              // [b0,b1, m0,m1, e0,e1] — start/end per clip
+  const cols=['#5db0ff','#42c98a','#ffb454'];    // beginning / middle / end
+  // one coloured band per clip; the gaps between bands are dropped silence
+  for(let i=0;i<3;i++){ const s0=S[2*i], s1=S[2*i+1];
+    const seg=document.createElement('div'); seg.className='seg';
+    seg.style.left=(s0/T*100)+'%'; seg.style.width=(Math.max(0,s1-s0)/T*100)+'%';
+    seg.style.background=cols[i]; tl.appendChild(seg);
+    const lab=document.createElement('div'); lab.className='seglabel';
+    lab.style.left=(s0/T*100+0.5)+'%'; lab.textContent=AUD[i]; tl.appendChild(lab); }
+  // six handles: start & end of each clip, colour-matched to its band
+  const hcols=[cols[0],cols[0],cols[1],cols[1],cols[2],cols[2]];
+  const tips=['beginning start','beginning end','middle start','middle end','end start','end end'];
+  S.forEach((v,i)=>{ const h=document.createElement('div'); h.className='handle'; h.title=tips[i];
+    h.style.left=(v/T*100)+'%'; h.style.background=hcols[i];
+    h.onmousedown=ev=>{ ev.preventDefault();
+      const move=e=>{ const r=tl.getBoundingClientRect();
+        const lo=i>0?S[i-1]:0, hi=i<5?S[i+1]:T;   // clamp between neighbours: keeps order, allows gaps
+        let t=Math.min(hi,Math.max(lo,(e.clientX-r.left)/r.width*T));
+        S[i]=+t.toFixed(2); drawTimeline(); };
       const up=()=>{document.removeEventListener('mousemove',move);document.removeEventListener('mouseup',up);};
       document.addEventListener('mousemove',move); document.addEventListener('mouseup',up); };
     tl.appendChild(h); });
@@ -196,7 +310,7 @@ function renderPlayers(){
 }
 $('#resplit').onclick=async()=>{ $('#status').textContent='re-splitting…';
   await fetch('/api/resplit/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({edges:item.audio_state.edges})});
+    body:JSON.stringify({spans:item.audio_state.spans})});
   $('#status').textContent='audio updated'; renderPlayers(); };
 $('#savechap').onclick=async()=>{ const texts=[...$('#chapters').querySelectorAll('textarea')].map(t=>t.value);
   await fetch('/api/chapters/'+cur,{method:'POST',headers:{'Content-Type':'application/json'},
@@ -207,12 +321,23 @@ $('#reprop').onclick=async()=>{ $('#status').textContent='re-detecting…';
   await $('#savechap').onclick(); $('#status').textContent='chapters saved — drag handles or re-run process.py for full re-align'; };
 
 /* ---------- save / next ---------- */
+function gotoNextUnreviewed(){   // "left to do" = neither reviewed nor archived
+  const todo=o=>!o.reviewed && !o.archived;
+  const n=(window._ids||[]).find(o=>todo(o)&&o.id!==cur)||(window._ids||[]).find(todo);
+  if(n) load(n.id); else $('#status').textContent='nothing left — all stories reviewed or archived ✓';
+}
 $('#save').onclick=async()=>{ await fetch('/api/save/'+cur,{method:'POST'});
-  $('#status').textContent='saved ✓ reviewed'; loadIds(); };
-$('#next').onclick=()=>{ const n=(window._ids||[]).find(o=>!o.reviewed && o.id!==cur)||(window._ids||[]).find(o=>!o.reviewed);
-  if(n) load(n.id); };
+  $('#status').textContent='saved ✓ reviewed'; await loadIds();
+  gotoNextUnreviewed();   // auto-advance to the next story left to do
+};
+$('#archive').onclick=async()=>{ await fetch('/api/archive/'+cur,{method:'POST'});
+  $('#status').textContent='archived 🗄 (won’t be exported)'; await loadIds();
+  gotoNextUnreviewed();   // auto-advance, skipping archived
+};
+$('#next').onclick=gotoNextUnreviewed;
 
-loadIds();
+// on open, list stories and jump straight to the first one still left to review
+(async()=>{ await loadIds(); gotoNextUnreviewed(); })();
 </script>
 </body>
 </html>

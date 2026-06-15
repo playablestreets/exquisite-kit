@@ -280,6 +280,10 @@ class ImageState:
     gate_reasons: list          # why it (would have) escalated
     claude: dict | None = None  # raw Claude response when escalated
     out_size: int = 1024
+    boxes: dict | None = None   # optional per-part independent crop boxes {top,middle,bottom},
+    #                             set by the reviewer for multi-drawing / non-stacked pages
+    quads: dict | None = None   # optional per-part 4-corner quads (TL,TR,BR,BL) for perspective
+    #                             warp — set by the reviewer for skewed / not-flat pages
 
 
 def _norm_box_to_px(nb: dict, W: int, H: int) -> list[int]:
@@ -300,6 +304,50 @@ def retile(img_bgr: np.ndarray, box: list[int], out_dir: str, out_size: int = 10
     """(Re)generate the 3 square tiles from an (adjusted) box. Returns {parts, box}."""
     parts = slice_and_resize(img_bgr, box, out_dir, out_size=out_size)
     return {"parts": parts, "box": box}
+
+
+def retile_boxes(img_bgr: np.ndarray, boxes: dict, out_dir: str, out_size: int = 1024) -> dict:
+    """(Re)generate the 3 tiles from THREE INDEPENDENT crop boxes — one per part — instead of one
+    box cut into equal thirds. `boxes` is {"top":[x0,y0,x1,y1], "middle":[...], "bottom":[...]} in
+    ORIGINAL image pixels; each is cropped and resized to out_size square (opaque, raw paper kept).
+    For pages where the head/torso/legs aren't a single stacked figure (multi-drawing or non-workbook
+    pages), so each part can be framed anywhere on the page. Returns {parts, boxes}."""
+    os.makedirs(out_dir, exist_ok=True)
+    H_img, W_img = img_bgr.shape[:2]
+    written: dict[str, str] = {}
+    for part in PARTS:
+        b = boxes[part]
+        x0, y0, x1, y1 = (_clampi(b[0], 0, W_img), _clampi(b[1], 0, H_img),
+                          _clampi(b[2], 0, W_img), _clampi(b[3], 0, H_img))
+        sec = img_bgr[min(y0, y1):max(y0, y1), min(x0, x1):max(x0, x1)]
+        if sec.size == 0:
+            sec = np.full((out_size, out_size, 3), 255, np.uint8)
+        p = os.path.join(out_dir, f"{part}.png")
+        _write_tile(p, sec, out_size)
+        written[part] = p
+    return {"parts": written, "boxes": boxes}
+
+
+def retile_quads(img_bgr: np.ndarray, quads: dict, out_dir: str, out_size: int = 1024) -> dict:
+    """(Re)generate the 3 tiles by PERSPECTIVE-warping a 4-corner quad per part to a square — for
+    pages photographed at an angle / not scanned flat, so a skewed region still yields an
+    undistorted square tile. `quads` = {"top":[[x,y]*4], "middle":[...], "bottom":[...]}, corners in
+    order TL,TR,BR,BL (original pixels). Returns {parts, quads}."""
+    os.makedirs(out_dir, exist_ok=True)
+    S = int(out_size)
+    dst = np.array([[0, 0], [S - 1, 0], [S - 1, S - 1], [0, S - 1]], dtype=np.float32)
+    written: dict[str, str] = {}
+    for part in PARTS:
+        pts = np.array(quads[part], dtype=np.float32)
+        if pts.shape != (4, 2):
+            raise ValueError(f"{part}: need 4 corner points, got {pts.shape}")
+        M = cv2.getPerspectiveTransform(pts, dst)
+        warp = cv2.warpPerspective(img_bgr, M, (S, S), flags=cv2.INTER_AREA,
+                                   borderMode=cv2.BORDER_REPLICATE)
+        p = os.path.join(out_dir, f"{part}.png")
+        cv2.imwrite(p, cv2.cvtColor(warp, cv2.COLOR_BGR2BGRA))
+        written[part] = p
+    return {"parts": written, "quads": quads}
 
 
 def propose(image_path: str, out_dir: str, use_claude: bool = True,

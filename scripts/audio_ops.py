@@ -202,6 +202,22 @@ def split_and_trim(audio_path: str, edges: list[float], out_dir: str) -> dict:
     return written
 
 
+def split_spans(audio_path: str, spans: list[float], out_dir: str) -> dict:
+    """spans = [b0,b1, m0,m1, e0,e1] -> 3 clips from INDEPENDENT [start,end] pairs (one per part), so
+    silence/chatter BETWEEN sections (b1->m0, m1->e0) is dropped, not just at the very ends. Each clip
+    is still silence-trimmed at its own edges. Used by the reviewer's 6-handle editor."""
+    os.makedirs(out_dir, exist_ok=True)
+    vals = [float(v) for v in spans]
+    written = {}
+    for i, part in enumerate(PARTS):
+        s, e = sorted((vals[2 * i], vals[2 * i + 1]))   # start<=end within each section
+        p = os.path.join(out_dir, f"{part}.wav")
+        cut(audio_path, s, e, p)
+        written[part] = {"path": p, "src_start": round(s, 2), "src_end": round(e, 2),
+                         "duration": round(duration(p), 2)}
+    return written
+
+
 # ------------------------------------------------------------------------------------ orchestrate
 @dataclass
 class AudioState:
